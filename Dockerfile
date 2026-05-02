@@ -21,7 +21,7 @@ COPY . .
 RUN pip3 install --break-system-packages -r artifacts/api-server/requirements.txt
 
 # Install Node dependencies
-RUN pnpm install --frozen-lockfile
+RUN pnpm install --no-frozen-lockfile
 
 # Build frontend (BASE_PATH=/ since the API server serves it from root)
 RUN PORT=3000 BASE_PATH=/ pnpm --filter @workspace/iq-trader run build
