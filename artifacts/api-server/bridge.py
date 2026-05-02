@@ -230,21 +230,36 @@ def login():
         state["api"] = api
         state["connected"] = True
         state["email"] = email
-        state["account_type"] = "PRACTICE"
+        state["account_type"] = "REAL"
         state["balance"] = float(bal or 0)
 
         balance_ids = fetch_profile_balances(api)
         state["balance_ids"] = balance_ids
-        practice_bal = balance_ids.get("PRACTICE", {}).get("amount", float(bal or 0))
-        real_bal = balance_ids.get("REAL", {}).get("amount", 0.0)
+        practice_bal = balance_ids.get("PRACTICE", {}).get("amount", 0.0)
+        real_bal = balance_ids.get("REAL", {}).get("amount", float(bal or 0))
 
-        print(f"[bridge] Connected! PRACTICE={practice_bal:.2f}, REAL={real_bal:.2f}", flush=True)
+        # Switch to REAL account automatically
+        real_info = balance_ids.get("REAL")
+        if real_info and real_info.get("id"):
+            try:
+                api.changebalance(real_info["id"])
+                time.sleep(1)
+                current_bal = api.profile.balance
+                if current_bal is not None:
+                    real_bal = float(current_bal)
+                    real_info["amount"] = real_bal
+                state["balance"] = real_bal
+                print(f"[bridge] Switched to REAL. Balance={real_bal:.2f} BRL", flush=True)
+            except Exception as e:
+                print(f"[bridge] Warning: could not switch to REAL: {e}", flush=True)
+        else:
+            print(f"[bridge] Connected! PRACTICE={practice_bal:.2f}, REAL={real_bal:.2f}", flush=True)
 
         return jsonify({
             "success": True,
             "email": email,
-            "accountType": "PRACTICE",
-            "balance": practice_bal,
+            "accountType": "REAL",
+            "balance": state["balance"],
             "realBalance": real_bal,
             "practiceBalance": practice_bal,
             "usingRealData": True,

@@ -23,7 +23,7 @@ export const iqSession: IQSession = {
   connected: false,
   ssid: "",
   email: "",
-  accountType: "PRACTICE",
+  accountType: "REAL",
   balance: 0,
   realBalance: 0,
   practiceBalance: 0,
@@ -94,7 +94,7 @@ export async function iqLogin(
 
     iqSession.connected = true;
     iqSession.email = email;
-    iqSession.accountType = "PRACTICE";
+    iqSession.accountType = (result.accountType as "REAL" | "PRACTICE") ?? "REAL";
     iqSession.balance = result.balance ?? 0;
     iqSession.realBalance = result.realBalance ?? 0;
     iqSession.practiceBalance = result.practiceBalance ?? result.balance ?? 0;

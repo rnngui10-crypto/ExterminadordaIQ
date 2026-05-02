@@ -199,9 +199,12 @@ export default function Dashboard() {
             ) : (
               <WifiOff className="w-3 h-3 text-gray-500" />
             )}
-            <button
+            <div
+              role="button"
+              tabIndex={0}
               onClick={() => setMenuOpen(!menuOpen)}
-              className="text-gray-400 hover:text-white transition-colors relative p-0.5"
+              onKeyDown={(e) => e.key === "Enter" && setMenuOpen(!menuOpen)}
+              className="text-gray-400 hover:text-white transition-colors relative p-0.5 cursor-pointer"
             >
               <MoreVertical className="w-4 h-4" />
               {menuOpen && (
@@ -218,7 +221,7 @@ export default function Dashboard() {
                   </button>
                 </div>
               )}
-            </button>
+            </div>
           </div>
         </div>
 
