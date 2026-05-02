@@ -1,0 +1,411 @@
+"""
+ROBÔ IA PARA IQ OPTION - VERSÃO COMPLETA
+Estratégias: Price Action + Machine Learning + Consenso
+Suporta: Forex, Cripto, Índices, Commodities (OTC e Mercado Aberto)
+"""
+
+import time
+import json
+import pandas as pd
+import numpy as np
+from datetime import datetime
+from sklearn.ensemble import RandomForestClassifier
+from iqoptionapi.stable_api import IQ_Option
+
+# ==================== CONFIGURAÇÕES INICIAIS ====================
+EMAIL = "seu_email@email.com"  # SUBSTITUA PELO SEU EMAIL
+SENHA = "sua_senha"  # SUBSTITUA PELA SUA SENHA
+
+# Confiança mínima para emitir sinal
+CONFIANCA_MINIMA = 75  # Só emite sinal se % >= 75
+
+# Ativos disponíveis organizados por categoria
+ATIVOS = {
+    "Forex_Principais": ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "USDCHF", "NZDUSD"],
+    "Forex_Crosses": ["EURGBP", "EURJPY", "GBPJPY", "AUDJPY", "CADJPY", "CHFJPY", "EURCAD", "EURAUD", "GBPAUD", "GBPCAD", "AUDCAD", "AUDNZD", "NZDJPY", "NZDCAD"],
+    "Forex_Exoticos": ["USDBRL", "USDTRY", "USDZAR", "USDMXN", "USDSGD", "USDHKD", "USDTHB", "USDNOK", "USDSEK", "EURTRY", "EURTHB"],
+    "Criptomoedas": ["BTCUSD", "ETHUSD", "DOGEUSD", "SOLUSD", "ADAUSD", "DOTUSD", "MATICUSD", "XRPUSD", "BNBUSD"],
+    "Indices": ["US30", "US500", "NAS100", "GER30", "UK100", "JP225", "EU50"],
+    "Commodities": ["XAUUSD", "XAGUSD", "USOUSD"]
+}
+
+# Lista de ativos OTC (funcionam fim de semana)
+OTC_ATIVOS = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "EURGBP", "EURJPY", "GBPJPY", "BTCUSD", "ETHUSD", "DOGEUSD", "XAUUSD", "US30", "NAS100"]
+
+# ==================== DETECÇÃO DE MERCADO ====================
+def detectar_modo_mercado(ativo):
+    """Detecta se o ativo está em OTC ou Mercado Real"""
+    hora_utc = datetime.utcnow()
+    # Fim de semana (Sexta 22:00 até Domingo 22:00 UTC)
+    is_fim_de_semana = hora_utc.weekday() >= 5 or (hora_utc.weekday() == 4 and hora_utc.hour >= 22) or (hora_utc.weekday() == 6 and hora_utc.hour < 22)
+    
+    if is_fim_de_semana and ativo in OTC_ATIVOS:
+        return "OTC", 85  # Confiança mínima maior para OTC
+    else:
+        return "REAL", 75
+
+# ==================== ESTRATÉGIA 1: PRICE ACTION (VELAS) ====================
+def estrategia_price_action(velas):
+    """
+    Analisa padrões de velas:
+    - Engulfing (reversão)
+    - Pin Bar (rejeição)
+    - Martelo / Estrela cadente
+    """
+    if len(velas) < 5:
+        return "NEUTRO", 0
+    
+    ultima = velas[-1]
+    penultima = velas[-2]
+    
+    abertura = ultima['open']
+    fechamento = ultima['close']
+    maximo = ultima['max'] if 'max' in ultima else ultima['high']
+    minimo = ultima['min'] if 'min' in ultima else ultima['low']
+    corpo = abs(fechamento - abertura)
+    sombra_superior = maximo - max(abertura, fechamento)
+    sombra_inferior = min(abertura, fechamento) - minimo
+    
+    # Engulfing de Alta (CALL)
+    if (penultima['close'] < penultima['open'] and  # Vela anterior vermelha
+        fechamento > abertura and  # Vela atual verde
+        fechamento > penultima['open'] and  # Fechou acima da abertura anterior
+        abertura < penultima['close']):  # Abriu abaixo do fechamento anterior
+        return "CALL", 85
+    
+    # Engulfing de Baixa (PUT)
+    if (penultima['close'] > penultima['open'] and  # Vela anterior verde
+        fechamento < abertura and  # Vela atual vermelha
+        fechamento < penultima['close'] and  # Fechou abaixo do fechamento anterior
+        abertura > penultima['open']):  # Abriu acima da abertura anterior
+        return "PUT", 85
+    
+    # Pin Bar de Alta (rejeição de baixa) - CALL
+    if (sombra_inferior > corpo * 2 and 
+        sombra_superior < corpo * 0.5 and
+        fechamento > abertura):
+        return "CALL", 80
+    
+    # Pin Bar de Baixa (rejeição de alta) - PUT
+    if (sombra_superior > corpo * 2 and 
+        sombra_inferior < corpo * 0.5 and
+        fechamento < abertura):
+        return "PUT", 80
+    
+    # Martelo (CALL)
+    if (sombra_inferior > corpo * 2 and 
+        sombra_superior < corpo * 0.3):
+        return "CALL", 75
+    
+    # Estrela Cadente (PUT)
+    if (sombra_superior > corpo * 2 and 
+        sombra_inferior < corpo * 0.3):
+        return "PUT", 75
+    
+    return "NEUTRO", 0
+
+# ==================== ESTRATÉGIA 2: MACHINE LEARNING ====================
+class ML_Trader:
+    def __init__(self):
+        self.modelo = RandomForestClassifier(n_estimators=100, random_state=42)
+        self.treinado = False
+    
+    def calcular_indicadores(self, df):
+        """Calcula indicadores técnicos para o ML"""
+        # Médias móveis
+        df['MA5'] = df['close'].rolling(5).mean()
+        df['MA10'] = df['close'].rolling(10).mean()
+        df['MA20'] = df['close'].rolling(20).mean()
+        
+        # RSI simplificado
+        delta = df['close'].diff()
+        ganho = delta.where(delta > 0, 0).rolling(14).mean()
+        perda = -delta.where(delta < 0, 0).rolling(14).mean()
+        rs = ganho / perda
+        df['RSI'] = 100 - (100 / (1 + rs))
+        
+        # Bandas de Bollinger
+        df['BB_Middle'] = df['close'].rolling(20).mean()
+        df['BB_Std'] = df['close'].rolling(20).std()
+        df['BB_Upper'] = df['BB_Middle'] + (df['BB_Std'] * 2)
+        df['BB_Lower'] = df['BB_Middle'] - (df['BB_Std'] * 2)
+        
+        # MACD
+        exp1 = df['close'].ewm(span=12, adjust=False).mean()
+        exp2 = df['close'].ewm(span=26, adjust=False).mean()
+        df['MACD'] = exp1 - exp2
+        df['Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
+        df['MACD_Hist'] = df['MACD'] - df['Signal']
+        
+        # Volume (se disponível)
+        if 'volume' in df.columns:
+            df['Volume_SMA'] = df['volume'].rolling(20).mean()
+        
+        return df
+    
+    def preparar_features(self, df):
+        """Prepara features para o modelo"""
+        features = ['MA5', 'MA10', 'MA20', 'RSI', 'BB_Upper', 'BB_Lower', 'MACD', 'MACD_Hist']
+        # Preencher valores NaN
+        df_features = df[features].fillna(0)
+        return df_features
+    
+    def treinar(self, dados_historicos):
+        """Treina o modelo com dados históricos"""
+        df = pd.DataFrame(dados_historicos)
+        df = self.calcular_indicadores(df)
+        
+        # Criar target: 1 se preço futuro > preço atual, 0 caso contrário
+        df['Target'] = (df['close'].shift(-1) > df['close']).astype(int)
+        
+        features = self.preparar_features(df)
+        # Remove linhas com NaN no target
+        dados_validos = df.dropna()
+        features_validas = self.preparar_features(dados_validos)
+        
+        if len(dados_validos) > 50:
+            self.modelo.fit(features_validas, dados_validos['Target'])
+            self.treinado = True
+            return True
+        return False
+    
+    def prever(self, velas_recentes):
+        """Faz previsão baseada nas últimas velas"""
+        if not self.treinado:
+            return "NEUTRO", 0
+        
+        df = pd.DataFrame(velas_recentes)
+        df = self.calcular_indicadores(df)
+        features = self.preparar_features(df.iloc[[-1]])
+        
+        prob = self.modelo.predict_proba(features)[0]
+        prob_alta = prob[1] * 100
+        
+        if prob_alta > 70:
+            return "CALL", prob_alta
+        elif prob_alta < 30:
+            return "PUT", 100 - prob_alta
+        else:
+            return "NEUTRO", 0
+
+# ==================== CLASSE PRINCIPAL DO ROBÔ ====================
+class RoboIQOption:
+    def __init__(self, email, senha):
+        self.email = email
+        self.senha = senha
+        self.api = None
+        self.ml_trader = ML_Trader()
+        self.conectado = False
+    
+    def conectar(self):
+        """Conecta à IQ Option"""
+        try:
+            self.api = IQ_Option(self.email, self.senha)
+            self.api.connect()
+            if self.api.check_connect():
+                self.conectado = True
+                print(f"✅ Conectado com sucesso! - {datetime.now()}")
+                return True
+            else:
+                print("❌ Falha na conexão")
+                return False
+        except Exception as e:
+            print(f"❌ Erro ao conectar: {e}")
+            return False
+    
+    def trocar_conta(self, tipo="PRACTICE"):
+        """Troca entre conta REAL e PRACTICE"""
+        if self.api:
+            self.api.change_balance(tipo)
+            print(f"📊 Conta alterada para: {tipo}")
+    
+    def get_preco_atual(self, ativo):
+        """Pega o preço atual do ativo"""
+        try:
+            velas = self.api.get_candles(ativo, 60, 5, int(time.time()))
+            if velas and len(velas) > 0:
+                return velas[-1]['close']
+        except:
+            pass
+        return None
+    
+    def analisar_ativo(self, ativo):
+        """Analisa um ativo com todas as estratégias"""
+        try:
+            # Pega velas para análise
+            velas = self.api.get_candles(ativo, 60, 50, int(time.time()))
+            if not velas or len(velas) < 20:
+                return None
+            
+            # Detecta modo de mercado
+            modo, conf_min = detectar_modo_mercado(ativo)
+            
+            # Estratégia 1: Price Action
+            direcao_pa, conf_pa = estrategia_price_action(velas)
+            
+            # Estratégia 2: Machine Learning
+            direcao_ml, conf_ml = self.ml_trader.prever(velas)
+            
+            # CONSENSO FINAL
+            direcao_final = "NEUTRO"
+            conf_final = 0
+            justificativa = ""
+            
+            if direcao_pa == direcao_ml and direcao_pa != "NEUTRO" and direcao_ml != "NEUTRO":
+                # Consenso total! Calcula confiança média
+                conf_final = (conf_pa + conf_ml) / 2
+                
+                # Aplica filtro por modo de mercado
+                if conf_final >= conf_min:
+                    direcao_final = direcao_pa
+                    justificativa = f"✅ CONSENSO: {direcao_pa}"
+                else:
+                    justificativa = f"⏳ Confiança ({conf_final:.0f}%) abaixo do mínimo para {modo} ({conf_min}%)"
+            elif direcao_pa != "NEUTRO" and direcao_ml == "NEUTRO":
+                # Só PA tem sinal
+                if conf_pa >= conf_min:
+                    direcao_final = direcao_pa
+                    justificativa = f"⚠️ Sinal APENAS Price Action ({conf_pa:.0f}%)"
+            elif direcao_ml != "NEUTRO" and direcao_pa == "NEUTRO":
+                # Só ML tem sinal
+                if conf_ml >= conf_min:
+                    direcao_final = direcao_ml
+                    justificativa = f"⚠️ Sinal APENAS Machine Learning ({conf_ml:.0f}%)"
+            elif direcao_pa != direcao_ml and direcao_pa != "NEUTRO" and direcao_ml != "NEUTRO":
+                justificativa = f"❌ CONFLITO! PA={direcao_pa}, ML={direcao_ml}"
+            else:
+                justificativa = "⏸️ Nenhum sinal detectado"
+            
+            preco_atual = velas[-1]['close']
+            
+            return {
+                "ativo": ativo,
+                "preco": preco_atual,
+                "modo": modo,
+                "direcao_pa": direcao_pa,
+                "conf_pa": round(conf_pa, 1),
+                "direcao_ml": direcao_ml,
+                "conf_ml": round(conf_ml, 1),
+                "direcao_final": direcao_final,
+                "conf_final": round(conf_final, 1),
+                "justificativa": justificativa,
+                "timestamp": datetime.now().strftime("%H:%M:%S")
+            }
+        except Exception as e:
+            print(f"Erro ao analisar {ativo}: {e}")
+            return None
+    
+    def monitorar_multiplos(self, ativos=None, intervalo=5):
+        """Monitora múltiplos ativos e retorna os melhores sinais"""
+        if ativos is None:
+            # Pega todos os ativos disponíveis
+            ativos = []
+            for categoria in ATIVOS.values():
+                ativos.extend(categoria)
+        
+        print(f"\n🚀 INICIANDO MONITORAMENTO - {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
+        print(f"📊 Monitorando {len(ativos)} ativos")
+        print("=" * 70)
+        
+        while True:
+            sinais_validos = []
+            
+            for ativo in ativos[:20]:  # Limita a 20 ativos por vez para performance
+                resultado = self.analisar_ativo(ativo)
+                if resultado and resultado["direcao_final"] != "NEUTRO":
+                    sinais_validos.append(resultado)
+            
+            # Ordena por confiança (maior primeiro)
+            sinais_validos.sort(key=lambda x: x["conf_final"], reverse=True)
+            
+            # Mostra os 5 melhores sinais
+            self.mostrar_painel(sinais_validos[:5])
+            
+            time.sleep(intervalo)
+    
+    def mostrar_painel(self, sinais):
+        """Mostra o painel com os sinais encontrados"""
+        import os
+        os.system('cls' if os.name == 'nt' else 'clear')
+        
+        print("=" * 70)
+        print("🤖 ROBÔ IA IQ OPTION - PAINEL DE SINAIS AO VIVO")
+        print(f"⏰ {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
+        print("=" * 70)
+        
+        if not sinais:
+            print("\n⏳ Aguardando sinais de alta confiança...")
+            print("   (Os sinais são liberados quando PA e ML concordam)")
+        else:
+            for sinal in sinais:
+                # Define cor do sinal
+                if sinal["direcao_final"] == "CALL":
+                    cor = "🟢"
+                    direcao_texto = "COMPRA (CALL)"
+                elif sinal["direcao_final"] == "PUT":
+                    cor = "🔴"
+                    direcao_texto = "VENDA (PUT)"
+                else:
+                    cor = "⚪"
+                    direcao_texto = "NEUTRO"
+                
+                print(f"\n{cor} {sinal['ativo']} - {direcao_texto}")
+                print(f"   📊 Modo: {sinal['modo']}")
+                print(f"   💰 Preço: {sinal['preco']}")
+                print(f"   🎯 Confiança: {sinal['conf_final']}%")
+                print(f"   📝 {sinal['justificativa']}")
+                print(f"   🔬 Detalhes: PA={sinal['direcao_pa']}({sinal['conf_pa']}%) | ML={sinal['direcao_ml']}({sinal['conf_ml']}%)")
+                print("-" * 50)
+        
+        print("\n💡 LEGENDA:")
+        print("   🟢 CALL = Compra (preço vai subir)")
+        print("   🔴 PUT = Venda (preço vai cair)")
+        print("   ✅ CONSENSO = Sinal FORTE (entre com confiança)")
+        print("   ⚠️ Sinal único = Apenas uma estratégia confirmou")
+        print("   ❌ CONFLITO = NÃO ENTRAR!")
+        print("=" * 70)
+
+# ==================== EXECUÇÃO PRINCIPAL ====================
+if __name__ == "__main__":
+    print("=" * 70)
+    print("🤖 ROBÔ IA PARA IQ OPTION")
+    print("   Estratégias: Price Action + Machine Learning + Consenso")
+    print("=" * 70)
+    
+    # Cria o robô
+    robo = RoboIQOption(EMAIL, SENHA)
+    
+    # Conecta
+    if not robo.conectar():
+        print("\n❌ Não foi possível conectar. Verifique:")
+        print("   1. Seu email e senha estão corretos?")
+        print("   2. Sua internet está funcionando?")
+        print("   3. A IQ Option está no ar?")
+        exit()
+    
+    # Escolhe conta (PRACTICE para teste, REAL para dinheiro de verdade)
+    print("\n📌 Escolha o modo de operação:")
+    print("   1 - Conta PRÁTICA (recomendado para teste)")
+    print("   2 - Conta REAL (seu dinheiro)")
+    
+    opcao = input("Digite 1 ou 2: ").strip()
+    if opcao == "2":
+        robo.trocar_conta("REAL")
+    else:
+        robo.trocar_conta("PRACTICE")
+    
+    print("\n🚀 Iniciando monitoramento...")
+    print("   Os sinais aparecerão automaticamente aqui!")
+    
+    # Inicia monitoramento
+    robo.monitorar_multiplos()
+iqoptionapi
+numpy
+pandas
+scikit-learn
+mkdir robo_iqoption
+cd robo_iqoption
+pip install -r requirements.txt
+EMAIL = "seu_email@email.com"  # Coloque seu email da IQ Option
+SENHA = "sua_senha"  # Coloque sua senha
+python robo_iqoption.py

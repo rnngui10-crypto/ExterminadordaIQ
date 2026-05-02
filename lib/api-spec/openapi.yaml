@@ -3,13 +3,21 @@ info:
   # Do not change the title, if the title changes, the import paths will be broken
   title: Api
   version: 0.1.0
-  description: API specification
+  description: API de trading IA para IQ Option
 servers:
   - url: /api
     description: Base API path
 tags:
   - name: health
     description: Health operations
+  - name: auth
+    description: Autenticação IQ Option
+  - name: assets
+    description: Ativos e candles
+  - name: signals
+    description: Sinais de trading
+  - name: account
+    description: Conta e saldo
 paths:
   /healthz:
     get:
@@ -24,6 +32,182 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+
+  /auth/login:
+    post:
+      operationId: login
+      tags: [auth]
+      summary: Login IQ Option
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: Login realizado
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoginResponse"
+        "401":
+          description: Credenciais inválidas
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /auth/status:
+    get:
+      operationId: getAuthStatus
+      tags: [auth]
+      summary: Status de conexão
+      responses:
+        "200":
+          description: Status de autenticação
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthStatus"
+
+  /auth/logout:
+    post:
+      operationId: logout
+      tags: [auth]
+      summary: Logout IQ Option
+      responses:
+        "200":
+          description: Logout realizado
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+
+  /account/balance:
+    get:
+      operationId: getBalance
+      tags: [account]
+      summary: Saldo da conta
+      responses:
+        "200":
+          description: Saldo atual
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Balance"
+
+  /account/type:
+    post:
+      operationId: switchAccountType
+      tags: [account]
+      summary: Trocar tipo de conta (REAL/PRACTICE)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SwitchAccountRequest"
+      responses:
+        "200":
+          description: Conta alterada
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+
+  /assets:
+    get:
+      operationId: getAssets
+      tags: [assets]
+      summary: Lista de ativos disponíveis
+      responses:
+        "200":
+          description: Ativos disponíveis por categoria
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssetsResponse"
+
+  /assets/{asset}/candles:
+    get:
+      operationId: getCandles
+      tags: [assets]
+      summary: Candles de um ativo
+      parameters:
+        - name: asset
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: timeframe
+          in: query
+          schema:
+            type: integer
+            default: 60
+        - name: count
+          in: query
+          schema:
+            type: integer
+            default: 50
+      responses:
+        "200":
+          description: Candles do ativo
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CandlesResponse"
+
+  /signals:
+    get:
+      operationId: getSignals
+      tags: [signals]
+      summary: Sinais de todos os ativos monitorados
+      parameters:
+        - name: category
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Lista de sinais
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SignalsResponse"
+
+  /signals/{asset}:
+    get:
+      operationId: getSignalByAsset
+      tags: [signals]
+      summary: Sinal de um ativo específico
+      parameters:
+        - name: asset
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Sinal do ativo
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Signal"
+
+  /signals/history:
+    get:
+      operationId: getSignalHistory
+      tags: [signals]
+      summary: Histórico de sinais gerados
+      responses:
+        "200":
+          description: Histórico de sinais
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SignalHistoryResponse"
+
 components:
   schemas:
     HealthStatus:
@@ -34,3 +218,260 @@ components:
       required:
         - status
 
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+      required:
+        - error
+        - message
+
+    MessageResponse:
+      type: object
+      properties:
+        message:
+          type: string
+        success:
+          type: boolean
+      required:
+        - message
+        - success
+
+    LoginRequest:
+      type: object
+      properties:
+        email:
+          type: string
+        password:
+          type: string
+      required:
+        - email
+        - password
+
+    LoginResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+        accountType:
+          type: string
+        balance:
+          type: number
+      required:
+        - success
+        - message
+
+    AuthStatus:
+      type: object
+      properties:
+        connected:
+          type: boolean
+        email:
+          type: string
+        accountType:
+          type: string
+        balance:
+          type: number
+      required:
+        - connected
+
+    Balance:
+      type: object
+      properties:
+        balance:
+          type: number
+        currency:
+          type: string
+        accountType:
+          type: string
+      required:
+        - balance
+        - currency
+        - accountType
+
+    SwitchAccountRequest:
+      type: object
+      properties:
+        accountType:
+          type: string
+          enum: [REAL, PRACTICE]
+      required:
+        - accountType
+
+    Candle:
+      type: object
+      properties:
+        time:
+          type: integer
+        open:
+          type: number
+        close:
+          type: number
+        high:
+          type: number
+        low:
+          type: number
+        volume:
+          type: number
+      required:
+        - time
+        - open
+        - close
+        - high
+        - low
+
+    CandlesResponse:
+      type: object
+      properties:
+        asset:
+          type: string
+        timeframe:
+          type: integer
+        candles:
+          type: array
+          items:
+            $ref: "#/components/schemas/Candle"
+      required:
+        - asset
+        - timeframe
+        - candles
+
+    AssetCategory:
+      type: object
+      properties:
+        name:
+          type: string
+        assets:
+          type: array
+          items:
+            type: string
+      required:
+        - name
+        - assets
+
+    AssetsResponse:
+      type: object
+      properties:
+        categories:
+          type: array
+          items:
+            $ref: "#/components/schemas/AssetCategory"
+        otcAssets:
+          type: array
+          items:
+            type: string
+      required:
+        - categories
+        - otcAssets
+
+    IndicatorValues:
+      type: object
+      properties:
+        rsi:
+          type: number
+        macd:
+          type: number
+        macdSignal:
+          type: number
+        macdHistogram:
+          type: number
+        bbUpper:
+          type: number
+        bbMiddle:
+          type: number
+        bbLower:
+          type: number
+        ma5:
+          type: number
+        ma10:
+          type: number
+        ma20:
+          type: number
+
+    Signal:
+      type: object
+      properties:
+        asset:
+          type: string
+        price:
+          type: number
+        mode:
+          type: string
+          enum: [OTC, REAL]
+        directionPA:
+          type: string
+          enum: [CALL, PUT, NEUTRO]
+        confidencePA:
+          type: number
+        directionML:
+          type: string
+          enum: [CALL, PUT, NEUTRO]
+        confidenceML:
+          type: number
+        directionRSI:
+          type: string
+          enum: [CALL, PUT, NEUTRO]
+        confidenceRSI:
+          type: number
+        directionFinal:
+          type: string
+          enum: [CALL, PUT, NEUTRO]
+        confidenceFinal:
+          type: number
+        justification:
+          type: string
+        indicators:
+          $ref: "#/components/schemas/IndicatorValues"
+        timestamp:
+          type: string
+        category:
+          type: string
+      required:
+        - asset
+        - price
+        - mode
+        - directionPA
+        - confidencePA
+        - directionML
+        - confidenceML
+        - directionRSI
+        - confidenceRSI
+        - directionFinal
+        - confidenceFinal
+        - justification
+        - timestamp
+        - category
+
+    SignalsResponse:
+      type: object
+      properties:
+        signals:
+          type: array
+          items:
+            $ref: "#/components/schemas/Signal"
+        totalAnalyzed:
+          type: integer
+        lastUpdate:
+          type: string
+      required:
+        - signals
+        - totalAnalyzed
+        - lastUpdate
+
+    SignalHistoryResponse:
+      type: object
+      properties:
+        history:
+          type: array
+          items:
+            $ref: "#/components/schemas/Signal"
+        total:
+          type: integer
+      required:
+        - history
+        - total
