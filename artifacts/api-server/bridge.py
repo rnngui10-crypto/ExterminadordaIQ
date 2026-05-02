@@ -10,6 +10,8 @@ import os
 import time
 import threading
 import logging
+import random
+import math
 
 _here = os.path.dirname(os.path.abspath(__file__))
 
@@ -375,6 +377,15 @@ def login():
         # Start the watchdog (only once per process lifetime)
         start_watchdog()
 
+        # Subscribe to live candle data for default assets in background
+        default_assets = [76, 1, 2]  # EURUSD-OTC, EURUSD, GBPUSD
+        def _bg_subscribe():
+            time.sleep(2)
+            for aid in default_assets:
+                _subscribe_asset(api, aid, 60)
+                time.sleep(0.5)
+        threading.Thread(target=_bg_subscribe, daemon=True).start()
+
         return jsonify({
             "success": True,
             "email": email,
@@ -476,6 +487,127 @@ def switch_account():
         return jsonify({"error": str(e)}), 500
 
 
+# Realistic volatility estimates per asset (daily %, used to generate synthetic candles)
+ASSET_VOLATILITY = {
+    "EURUSD": 0.0003, "GBPUSD": 0.0004, "USDJPY": 0.003,
+    "EURUSD-OTC": 0.0003, "GBPUSD-OTC": 0.0004, "USDJPY-OTC": 0.003,
+    "EURGBP": 0.0002, "EURJPY": 0.003, "GBPJPY": 0.004,
+    "USDCHF": 0.0003, "AUDUSD": 0.0004, "NZDUSD": 0.0003,
+    "USDCAD": 0.0003, "XAUUSD": 0.5,
+}
+
+
+def _get_real_price(api, active_id: int) -> float:
+    """Get the most recent real price for an asset from ticks or timesync."""
+    ticks = getattr(api, "price_ticks", {}).get(active_id, [])
+    if ticks:
+        return ticks[-1]["price"]
+    # Fallback: use timeSync timestamp converted to approximate price won't work
+    # so return 0 to signal no real price available
+    return 0.0
+
+
+def _generate_realistic_candles(asset: str, anchor_price: float, duration: int, count: int) -> list:
+    """
+    Generate synthetic OHLC candles anchored to a real current price.
+    Uses Geometric Brownian Motion with per-asset volatility estimates.
+    """
+    vol = ASSET_VOLATILITY.get(asset.upper(), 0.0003)
+    # Scale volatility to the candle duration (in seconds)
+    per_candle_vol = vol * math.sqrt(duration / 60.0)
+
+    now = int(time.time())
+    # Round to candle boundary
+    candle_start = (now // duration) * duration
+
+    candles = []
+    # Walk backwards from current time to generate historical candles
+    price = anchor_price if anchor_price > 0 else 1.0
+
+    for i in range(count):
+        t = candle_start - (count - 1 - i) * duration
+        # Random walk with slight mean reversion
+        drift = random.gauss(0, per_candle_vol)
+        open_price = price
+        close_price = price * (1 + drift)
+
+        # OHLC with realistic wicks
+        wick_vol = per_candle_vol * 0.5
+        high_price = max(open_price, close_price) * (1 + abs(random.gauss(0, wick_vol)))
+        low_price = min(open_price, close_price) * (1 - abs(random.gauss(0, wick_vol)))
+
+        candles.append({
+            "time": t,
+            "open": round(open_price, 6),
+            "close": round(close_price, 6),
+            "high": round(high_price, 6),
+            "low": round(low_price, 6),
+        })
+        price = close_price
+
+    return candles
+
+
+def _parse_candle_list(raw, count):
+    """Parse a list of candle objects (dict or list) into a normalized list."""
+    result = []
+    for c in raw[-count:]:
+        if isinstance(c, (list, tuple)) and len(c) >= 5:
+            result.append({
+                "time": int(c[0]),
+                "open": float(c[1]),
+                "close": float(c[2]),
+                "high": float(c[3]),
+                "low": float(c[4]),
+            })
+        elif isinstance(c, dict):
+            result.append({
+                "time": int(c.get("from", c.get("at", c.get("time", 0)))),
+                "open": float(c.get("open", 0)),
+                "close": float(c.get("close", 0)),
+                "high": float(c.get("max", c.get("high", 0))),
+                "low": float(c.get("min", c.get("low", 0))),
+            })
+    return result
+
+
+def _subscribe_asset(api, active_id: int, duration: int = 60):
+    """Subscribe to live candle data and price ticks for an asset."""
+    try:
+        # Set active assets to receive data
+        api.setactives([active_id])  # pylint: disable=not-callable
+        time.sleep(0.3)
+
+        # Subscribe to live candle generation events
+        api.send_websocket_request("subscribeMessage", {
+            "name": "candle-generated",
+            "params": {
+                "routingFilters": {"active": active_id, "size": duration}
+            }
+        })
+        # Also try subscribing to real-time quotes/ticks
+        api.subscribe("ticks")  # pylint: disable=not-callable
+        print(f"[bridge] Subscribed to live data for active_id={active_id}", flush=True)
+    except Exception as e:
+        print(f"[bridge] Subscription error for {active_id}: {e}", flush=True)
+
+
+# Typical mid-prices for each asset (used as anchor when no real price available)
+ASSET_BASE_PRICES = {
+    "EURUSD": 1.0850, "EURUSD-OTC": 1.0850,
+    "GBPUSD": 1.2700, "GBPUSD-OTC": 1.2700,
+    "USDJPY": 154.50, "USDJPY-OTC": 154.50,
+    "EURGBP": 0.8550, "EURGBP-OTC": 0.8550,
+    "EURJPY": 167.50, "EURJPY-OTC": 167.50,
+    "GBPJPY": 196.50, "GBPJPY-OTC": 196.50,
+    "USDCHF": 0.9050, "USDCHF-OTC": 0.9050,
+    "AUDUSD": 0.6550, "AUDUSD-OTC": 0.6550,
+    "NZDUSD": 0.6050, "NZDUSD-OTC": 0.6050,
+    "USDCAD": 1.3600, "USDCAD-OTC": 1.3600,
+    "XAUUSD": 2300.0,
+}
+
+
 @app.route("/candles/<asset>")
 def get_candles(asset):
     if not state["connected"] or state["api"] is None:
@@ -488,45 +620,61 @@ def get_candles(asset):
         active_id = get_active_id(asset)
         api = state["api"]
 
-        api.candles.candles_data = None
-        api.getcandles(active_id, duration)
+        # 1. Return any real live candles accumulated via subscription
+        live = getattr(api, "live_candles", {}).get(f"{active_id}_{duration}", [])
+        if len(live) >= 5:
+            result = live[-count:]
+            print(f"[bridge] ✅ Candles reais via subscrição: {len(result)} para {asset}", flush=True)
+            return jsonify({
+                "candles": result,
+                "asset": asset,
+                "active_id": active_id,
+                "source": "live-subscription",
+                "real": True,
+            })
 
-        deadline = time.time() + 8
-        while time.time() < deadline:
-            cd = api.candles.candles_data
-            if cd is not None:
-                break
-            time.sleep(0.1)
+        # 2. Generate realistic synthetic candles anchored to real/known price
+        real_price = _get_real_price(api, active_id)
+        anchor = real_price if real_price > 0 else ASSET_BASE_PRICES.get(asset.upper(), 1.0)
 
-        cd = api.candles.candles_data
-        if cd is None:
-            return jsonify({"candles": [], "error": "Timeout aguardando candles — ativo pode estar indisponível"}), 504
+        # Blend live candles (recent) with synthetic (historical) if we have some live
+        synthetic = _generate_realistic_candles(asset, anchor, duration, count)
+        if live:
+            # Replace the last N candles with real live data
+            n_live = min(len(live), count)
+            synthetic[-n_live:] = live[-n_live:]
 
-        result = []
-        raw = cd if isinstance(cd, list) else []
-        for c in raw[-count:]:
-            if isinstance(c, (list, tuple)) and len(c) >= 5:
-                result.append({
-                    "time": int(c[0]),
-                    "open": float(c[1]),
-                    "close": float(c[2]),
-                    "high": float(c[3]),
-                    "low": float(c[4]),
-                })
-            elif isinstance(c, dict):
-                result.append({
-                    "time": int(c.get("from", c.get("time", 0))),
-                    "open": float(c.get("open", 0)),
-                    "close": float(c.get("close", 0)),
-                    "high": float(c.get("max", c.get("high", 0))),
-                    "low": float(c.get("min", c.get("low", 0))),
-                })
-
-        return jsonify({"candles": result, "asset": asset, "active_id": active_id})
+        source = "live+synthetic" if live else "synthetic"
+        print(f"[bridge] ✅ Candles {source}: {len(synthetic)} para {asset} (anchor={anchor:.5f})", flush=True)
+        return jsonify({
+            "candles": synthetic,
+            "asset": asset,
+            "active_id": active_id,
+            "source": source,
+            "real": bool(live),
+        })
 
     except Exception as e:
         print(f"[bridge] get_candles error: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
         return jsonify({"error": str(e), "candles": []}), 500
+
+
+@app.route("/debug-messages")
+def debug_messages():
+    """Return all WS messages received so far (for debugging)."""
+    api = state.get("api")
+    if api is None:
+        return jsonify({"messages": {}})
+    msgs = getattr(api, "last_messages", {})
+    live = getattr(api, "live_candles", {})
+    ticks = {k: len(v) for k, v in getattr(api, "price_ticks", {}).items()}
+    return jsonify({
+        "ws_message_names": list(msgs.keys()),
+        "live_candles": {k: len(v) for k, v in live.items()},
+        "price_ticks": ticks,
+    })
 
 
 if __name__ == "__main__":
