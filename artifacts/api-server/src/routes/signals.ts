@@ -9,16 +9,16 @@ const router = Router();
 const signalHistory: Signal[] = [];
 
 async function getCandlesForAsset(asset: string, duration = 60, count = 100) {
-  if (iqSession.connected && iqSession.ws) {
+  if (iqSession.connected) {
     const realCandles = await iqGetCandles(asset, duration, count);
     if (realCandles && realCandles.length >= 20) {
       return realCandles.map((c) => ({
-        time: c.from,
+        time: c.time,
         open: c.open,
         close: c.close,
-        high: c.max,
-        low: c.min,
-        volume: c.volume,
+        high: c.high,
+        low: c.low,
+        volume: 0,
       }));
     }
   }
@@ -58,7 +58,7 @@ router.get("/signals", async (req, res) => {
     signals,
     totalAnalyzed: allAssets.length,
     lastUpdate: new Date().toISOString(),
-    usingRealData: iqSession.connected && !!iqSession.ws,
+    usingRealData: iqSession.connected,
   });
 });
 
@@ -92,7 +92,7 @@ router.get("/signals/:asset", async (req, res) => {
 
   return res.json({
     ...signal,
-    usingRealData: iqSession.connected && !!iqSession.ws,
+    usingRealData: iqSession.connected,
   });
 });
 
