@@ -5,7 +5,9 @@
  * API de trading IA para IQ Option
  * OpenAPI spec version: 0.1.0
  */
+import type { AssetCategory } from "./assetCategory";
 
-export interface HealthStatus {
-  status: string;
+export interface AssetsResponse {
+  categories: AssetCategory[];
+  otcAssets: string[];
 }

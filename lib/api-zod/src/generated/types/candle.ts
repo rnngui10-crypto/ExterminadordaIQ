@@ -6,6 +6,11 @@
  * OpenAPI spec version: 0.1.0
  */
 
-export interface HealthStatus {
-  status: string;
+export interface Candle {
+  time: number;
+  open: number;
+  close: number;
+  high: number;
+  low: number;
+  volume?: number;
 }

@@ -5,7 +5,10 @@
  * API de trading IA para IQ Option
  * OpenAPI spec version: 0.1.0
  */
+import type { Signal } from "./signal";
 
-export interface HealthStatus {
-  status: string;
+export interface SignalsResponse {
+  signals: Signal[];
+  totalAnalyzed: number;
+  lastUpdate: string;
 }

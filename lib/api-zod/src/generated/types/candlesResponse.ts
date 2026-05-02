@@ -5,7 +5,10 @@
  * API de trading IA para IQ Option
  * OpenAPI spec version: 0.1.0
  */
+import type { Candle } from "./candle";
 
-export interface HealthStatus {
-  status: string;
+export interface CandlesResponse {
+  asset: string;
+  timeframe: number;
+  candles: Candle[];
 }

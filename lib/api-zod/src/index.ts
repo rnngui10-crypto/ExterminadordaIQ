@@ -1,2 +1,25 @@
 export * from "./generated/api";
-export * from "./generated/types";
+export type {
+  AssetCategory,
+  AssetsResponse,
+  AuthStatus,
+  Balance,
+  Candle,
+  CandlesResponse,
+  ErrorResponse,
+  GetSignalsParams,
+  HealthStatus,
+  IndicatorValues,
+  LoginRequest,
+  MessageResponse,
+  Signal,
+  SignalDirectionFinal,
+  SignalDirectionML,
+  SignalDirectionPA,
+  SignalDirectionRSI,
+  SignalHistoryResponse,
+  SignalMode,
+  SignalsResponse,
+  SwitchAccountRequest,
+  SwitchAccountRequestAccountType,
+} from "./generated/types";
