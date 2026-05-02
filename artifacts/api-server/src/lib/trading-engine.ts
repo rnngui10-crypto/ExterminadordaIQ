@@ -175,27 +175,56 @@ function rsiSignal(rsi?: number): { direction: "CALL" | "PUT" | "NEUTRO"; confid
   return { direction: "NEUTRO", confidence: 0 };
 }
 
-export function generateMockCandles(asset: string, count = 50): Candle[] {
-  const seed = asset.split("").reduce((a, c) => a + c.charCodeAt(0), 0);
-  let price = 1.0 + (seed % 200) / 100;
-  const candles: Candle[] = [];
+export function generateMockCandles(asset: string, count = 100, durationSecs = 60): Candle[] {
+  const assetSeed = asset.split("").reduce((a, c) => a + c.charCodeAt(0), 0);
   const now = Math.floor(Date.now() / 1000);
+  // Align to candle boundaries so candles are consistent within same minute
+  const alignedNow = Math.floor(now / durationSecs) * durationSecs;
+
+  // Base price keyed per asset
+  const basePrices: Record<string, number> = {
+    EURUSD: 1.0850, GBPUSD: 1.2650, USDJPY: 149.50, AUDUSD: 0.6530,
+    USDCAD: 1.3620, USDCHF: 0.9050, NZDUSD: 0.6010,
+    EURGBP: 0.8580, EURJPY: 162.30, GBPJPY: 189.20, AUDJPY: 97.60,
+    EURCAD: 1.4780, EURAUD: 1.6610,
+    BTCUSD: 62500, ETHUSD: 3150, DOGEUSD: 0.1520, SOLUSD: 148.0, XRPUSD: 0.5210,
+    USDBRL: 5.0200, USDTRY: 32.40, USDZAR: 18.70, USDMXN: 16.80,
+    US30: 38200, US500: 5100, NAS100: 17800, GER30: 17600, UK100: 7900, JP225: 38500,
+    XAUUSD: 2310, XAGUSD: 27.40, USOUSD: 82.50,
+  };
+
+  let price = basePrices[asset] ?? (1.0 + (assetSeed % 200) / 100);
+  const volatility = price > 1000 ? price * 0.0008 : price > 100 ? price * 0.001 : 0.0012;
+  const candles: Candle[] = [];
 
   for (let i = count; i >= 0; i--) {
-    const rand = () => (Math.sin(seed * i + i * 7.3) * 0.5 + 0.5);
-    const change = (rand() - 0.48) * 0.003;
-    price = Math.max(0.0001, price + change);
+    const candleTime = alignedNow - i * durationSecs;
+    // Mix asset seed + candle time slot for time-varying but reproducible-within-slot data
+    const slot = Math.floor(candleTime / durationSecs);
+    const s1 = Math.sin(assetSeed * 0.137 + slot * 0.7193) * 0.5 + 0.5;
+    const s2 = Math.sin(assetSeed * 0.311 + slot * 1.3847 + 2.1) * 0.5 + 0.5;
+    const s3 = Math.sin(assetSeed * 0.517 + slot * 0.4423 + 1.3) * 0.5 + 0.5;
+    const s4 = Math.sin(assetSeed * 0.729 + slot * 2.1173 + 0.9) * 0.5 + 0.5;
+
+    // Trending bias changes slowly over time
+    const trend = Math.sin(assetSeed * 0.05 + slot * 0.02) * 0.3;
+    const change = (s1 - 0.5 + trend * 0.1) * volatility;
+    price = Math.max(price * 0.98, Math.min(price * 1.02, price + change));
+
+    const bodySize = (s2 * 0.6 + 0.1) * volatility;
     const open = price;
-    const close = price + (rand() - 0.5) * 0.002;
-    const high = Math.max(open, close) + rand() * 0.001;
-    const low = Math.min(open, close) - rand() * 0.001;
+    const close = price + (s3 - 0.5) * bodySize;
+    const high = Math.max(open, close) + s4 * volatility * 0.4;
+    const low = Math.min(open, close) - (1 - s4) * volatility * 0.4;
+
+    const dp = price > 100 ? 2 : price > 1 ? 5 : 5;
     candles.push({
-      time: now - i * 60,
-      open: parseFloat(open.toFixed(5)),
-      close: parseFloat(close.toFixed(5)),
-      high: parseFloat(high.toFixed(5)),
-      low: parseFloat(low.toFixed(5)),
-      volume: Math.floor(rand() * 1000 + 100),
+      time: candleTime,
+      open: parseFloat(open.toFixed(dp)),
+      close: parseFloat(close.toFixed(dp)),
+      high: parseFloat(high.toFixed(dp)),
+      low: parseFloat(low.toFixed(dp)),
+      volume: Math.floor(s2 * 1200 + 200),
     });
     price = close;
   }

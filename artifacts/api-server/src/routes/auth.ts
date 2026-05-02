@@ -1,21 +1,8 @@
 import { Router } from "express";
 import { LoginBody } from "@workspace/api-zod";
+import { iqLogin, iqLogout, iqSwitchAccount, iqSession } from "../lib/iq-client";
 
 const router = Router();
-
-interface SessionState {
-  connected: boolean;
-  email: string;
-  accountType: "REAL" | "PRACTICE";
-  balance: number;
-}
-
-export const session: SessionState = {
-  connected: false,
-  email: "",
-  accountType: "PRACTICE",
-  balance: 0,
-};
 
 router.post("/auth/login", async (req, res) => {
   const parsed = LoginBody.safeParse(req.body);
@@ -24,40 +11,55 @@ router.post("/auth/login", async (req, res) => {
   }
 
   const { email, password } = parsed.data;
-
   if (!email || !password) {
     return res.status(400).json({ error: "Dados inválidos", message: "Email e senha são obrigatórios" });
   }
 
-  session.connected = true;
-  session.email = email;
-  session.accountType = "PRACTICE";
-  session.balance = 10000;
+  req.log.info({ email }, "Login attempt");
+  const result = await iqLogin(email, password);
 
-  req.log.info({ email }, "User logged in");
+  if (!result.success) {
+    return res.status(401).json({
+      success: false,
+      message: result.error ?? "Falha ao conectar com IQ Option",
+    });
+  }
 
+  req.log.info({ email, accountType: iqSession.accountType }, "Login successful");
   return res.json({
     success: true,
     message: "Conectado com sucesso à IQ Option",
-    accountType: session.accountType,
-    balance: session.balance,
+    accountType: iqSession.accountType,
+    balance: iqSession.balance,
   });
 });
 
 router.get("/auth/status", (_req, res) => {
   return res.json({
-    connected: session.connected,
-    email: session.connected ? session.email : undefined,
-    accountType: session.connected ? session.accountType : undefined,
-    balance: session.connected ? session.balance : undefined,
+    connected: iqSession.connected,
+    email: iqSession.connected ? iqSession.email : undefined,
+    accountType: iqSession.connected ? iqSession.accountType : undefined,
+    balance: iqSession.connected ? iqSession.balance : undefined,
   });
 });
 
 router.post("/auth/logout", (req, res) => {
-  session.connected = false;
-  session.email = "";
+  iqLogout();
   req.log.info("User logged out");
   return res.json({ success: true, message: "Desconectado com sucesso" });
+});
+
+router.post("/account/switch", (req, res) => {
+  const { type } = req.body as { type?: string };
+  if (type !== "REAL" && type !== "PRACTICE") {
+    return res.status(400).json({ error: "Tipo de conta inválido" });
+  }
+  iqSwitchAccount(type);
+  return res.json({
+    success: true,
+    accountType: iqSession.accountType,
+    balance: iqSession.balance,
+  });
 });
 
 export default router;

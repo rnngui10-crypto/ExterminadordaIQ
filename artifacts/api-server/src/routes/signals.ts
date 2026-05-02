@@ -1,15 +1,32 @@
 import { Router } from "express";
-import { GetSignalsQueryParams, GetSignalByAssetParams } from "@workspace/api-zod";
+import { GetSignalByAssetParams } from "@workspace/api-zod";
 import { ASSETS, generateMockCandles, analyzeAsset } from "../lib/trading-engine";
+import { iqSession, iqGetCandles } from "../lib/iq-client";
 import type { Signal } from "@workspace/api-zod";
 
 const router = Router();
 
 const signalHistory: Signal[] = [];
 
-router.get("/signals", (req, res) => {
-  const queryParsed = GetSignalsQueryParams.safeParse(req.query);
-  const category = queryParsed.success ? queryParsed.data.category : undefined;
+async function getCandlesForAsset(asset: string, duration = 60, count = 100) {
+  if (iqSession.connected && iqSession.ws) {
+    const realCandles = await iqGetCandles(asset, duration, count);
+    if (realCandles && realCandles.length >= 20) {
+      return realCandles.map((c) => ({
+        time: c.from,
+        open: c.open,
+        close: c.close,
+        high: c.max,
+        low: c.min,
+        volume: c.volume,
+      }));
+    }
+  }
+  return generateMockCandles(asset, count, duration);
+}
+
+router.get("/signals", async (req, res) => {
+  const category = typeof req.query["category"] === "string" ? req.query["category"] : undefined;
 
   const allAssets: string[] = [];
   for (const [cat, assets] of Object.entries(ASSETS)) {
@@ -20,7 +37,7 @@ router.get("/signals", (req, res) => {
 
   const signals: Signal[] = [];
   for (const asset of allAssets) {
-    const candles = generateMockCandles(asset, 50);
+    const candles = await getCandlesForAsset(asset);
     const signal = analyzeAsset(asset, candles);
     signals.push(signal);
 
@@ -41,6 +58,7 @@ router.get("/signals", (req, res) => {
     signals,
     totalAnalyzed: allAssets.length,
     lastUpdate: new Date().toISOString(),
+    usingRealData: iqSession.connected && !!iqSession.ws,
   });
 });
 
@@ -51,17 +69,31 @@ router.get("/signals/history", (_req, res) => {
   });
 });
 
-router.get("/signals/:asset", (req, res) => {
+router.get("/signals/:asset", async (req, res) => {
   const paramsParsed = GetSignalByAssetParams.safeParse(req.params);
   if (!paramsParsed.success) {
     return res.status(400).json({ error: "Ativo inválido", message: "Forneça um ativo válido" });
   }
 
   const { asset } = paramsParsed.data;
-  const candles = generateMockCandles(asset, 50);
+  const duration = typeof req.query["duration"] === "string" ? Number(req.query["duration"]) : 60;
+  const candles = await getCandlesForAsset(asset, duration, 100);
   const signal = analyzeAsset(asset, candles);
 
-  return res.json(signal);
+  if (signal.directionFinal !== "NEUTRO") {
+    const existingIdx = signalHistory.findIndex((s) => s.asset === asset);
+    if (existingIdx >= 0) {
+      signalHistory[existingIdx] = signal;
+    } else {
+      signalHistory.unshift(signal);
+    }
+    if (signalHistory.length > 200) signalHistory.pop();
+  }
+
+  return res.json({
+    ...signal,
+    usingRealData: iqSession.connected && !!iqSession.ws,
+  });
 });
 
 export default router;
