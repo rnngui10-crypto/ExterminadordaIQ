@@ -72,6 +72,7 @@ export default function Dashboard() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [scanCount, setScanCount] = useState(0);
   const [dots, setDots] = useState(".");
+  const [usingRealDataLive, setUsingRealDataLive] = useState(false);
 
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -95,7 +96,8 @@ export default function Dashboard() {
     try {
       const res = await fetch(`/api/price/${asset}`);
       if (!res.ok) return;
-      const data = await res.json() as { price: number };
+      const data = await res.json() as { price: number; usingRealData: boolean };
+      setUsingRealDataLive(!!data.usingRealData);
       setCurrentPrice((prev) => {
         prevPriceRef.current = prev;
         if (prev !== null && data.price !== prev) {
@@ -228,7 +230,7 @@ export default function Dashboard() {
   if (!connected && !authStatus.isLoading) return <LoginForm />;
 
   const isCall = signal?.directionFinal === "CALL";
-  const usingReal = authStatus.data?.usingRealData ?? false;
+  const usingReal = usingRealDataLive;
 
   return (
     <div className="w-full max-w-sm font-mono select-none">
@@ -236,6 +238,38 @@ export default function Dashboard() {
         className="rounded-xl overflow-hidden shadow-2xl border"
         style={{ background: "#0d0d18", borderColor: "rgba(255,255,255,0.07)" }}
       >
+        {/* ── BANNER DADOS SIMULADOS ── */}
+        <AnimatePresence>
+          {!usingReal && connected && (
+            <motion.div
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: "auto", opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              className="overflow-hidden"
+            >
+              <div
+                className="flex items-center justify-between px-3 py-2"
+                style={{ background: "rgba(255,23,68,0.12)", borderBottom: "1px solid rgba(255,23,68,0.25)" }}
+              >
+                <div className="flex items-center gap-2">
+                  <WifiOff className="w-3.5 h-3.5 text-red-400 shrink-0" />
+                  <div>
+                    <p className="text-red-400 text-[10px] font-black uppercase tracking-wider">DADOS SIMULADOS</p>
+                    <p className="text-red-500/60 text-[9px]">Conexão com IQ Option perdida</p>
+                  </div>
+                </div>
+                <button
+                  onClick={handleLogout}
+                  className="text-[9px] font-black px-2.5 py-1.5 rounded-lg uppercase tracking-widest transition-all active:scale-95"
+                  style={{ background: "rgba(255,23,68,0.2)", color: "#ff4444", border: "1px solid rgba(255,23,68,0.4)" }}
+                >
+                  Reconectar
+                </button>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
         {/* ── HEADER ── */}
         <div
           className="flex items-center justify-between px-3 py-2.5"
@@ -246,10 +280,21 @@ export default function Dashboard() {
             <span className="text-white font-black text-[11px] tracking-widest uppercase">EXTERMINADOR DA PORRA</span>
           </div>
           <div className="flex items-center gap-2">
-            <div className="flex items-center gap-1">
-              {usingReal ? <Wifi className="w-3 h-3 text-green-400" /> : <WifiOff className="w-3 h-3 text-gray-600" />}
-              <span className="text-[9px]" style={{ color: usingReal ? "#4ade80" : "#555" }}>
-                {usingReal ? "REAL" : "DEMO"}
+            <div
+              className="flex items-center gap-1.5 px-2 py-1 rounded-full"
+              style={{
+                background: usingReal ? "rgba(0,230,118,0.1)" : "rgba(255,23,68,0.1)",
+                border: `1px solid ${usingReal ? "rgba(0,230,118,0.3)" : "rgba(255,23,68,0.3)"}`,
+              }}
+            >
+              {usingReal
+                ? <Wifi className="w-2.5 h-2.5 text-green-400" />
+                : <WifiOff className="w-2.5 h-2.5 text-red-400" />}
+              <span
+                className="text-[9px] font-black uppercase tracking-wider"
+                style={{ color: usingReal ? "#4ade80" : "#ff4444" }}
+              >
+                {usingReal ? "REAL" : "SIMULADO"}
               </span>
             </div>
             <div
