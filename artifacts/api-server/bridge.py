@@ -11,7 +11,16 @@ import time
 import threading
 import logging
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../.pythonlibs/lib/python3.11/site-packages'))
+_here = os.path.dirname(os.path.abspath(__file__))
+
+# On Replit dev: use .pythonlibs. On Render/production: use bundled vendor dir.
+_replit_libs = os.path.join(_here, '../../.pythonlibs/lib/python3.11/site-packages')
+_vendor_dir   = os.path.join(_here, 'vendor')
+
+if os.path.isdir(_replit_libs):
+    sys.path.insert(0, _replit_libs)
+elif os.path.isdir(_vendor_dir):
+    sys.path.insert(0, _vendor_dir)
 
 import requests as http_requests
 from flask import Flask, jsonify, request
