@@ -11,7 +11,7 @@ router.get("/price/:asset", async (req, res) => {
   let price: number | null = null;
   let usingRealData = false;
 
-  if (iqSession.connected && iqSession.ws) {
+  if (iqSession.connected) {
     try {
       const candles = await iqGetCandles(asset, 60, 2);
       if (candles && candles.length > 0) {
