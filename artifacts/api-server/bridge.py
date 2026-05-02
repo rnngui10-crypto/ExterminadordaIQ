@@ -51,10 +51,16 @@ state = {
     "api": None,
     "connected": False,
     "email": "",
+    "_password": "",
     "account_type": "PRACTICE",
     "balance": 0.0,
     "balance_ids": {},
+    "reconnect_attempts": 0,
+    "last_reconnect": 0.0,
 }
+
+_watchdog_started = False
+_state_lock = threading.Lock()
 
 
 def get_active_id(asset: str) -> int:
@@ -65,6 +71,105 @@ def get_active_id(asset: str) -> int:
     if otc in ASSET_IDS:
         return ASSET_IDS[otc]
     return ASSET_IDS.get("EURUSD-OTC", 76)
+
+
+def is_ws_alive() -> bool:
+    """Check if the WebSocket connection is still alive."""
+    try:
+        api = state.get("api")
+        if api is None:
+            return False
+        wsc = getattr(api, "websocket_client", None)
+        if wsc is None:
+            return False
+        wss = getattr(wsc, "wss", None)
+        if wss is None:
+            return False
+        sock = getattr(wss, "sock", None)
+        if sock is None:
+            return False
+        return True
+    except Exception:
+        return False
+
+
+def do_reconnect():
+    """Try to reconnect using stored credentials. Called by watchdog."""
+    email = state.get("email", "")
+    password = state.get("_password", "")
+    if not email or not password:
+        return
+
+    now = time.time()
+    if now - state["last_reconnect"] < 25:
+        return
+
+    state["last_reconnect"] = now
+    state["reconnect_attempts"] = state.get("reconnect_attempts", 0) + 1
+    print(f"[watchdog] Reconectando... tentativa #{state['reconnect_attempts']}", flush=True)
+
+    try:
+        old_api = state.get("api")
+        if old_api is not None:
+            try:
+                wsc = getattr(old_api, "websocket_client", None)
+                if wsc:
+                    wss = getattr(wsc, "wss", None)
+                    if wss:
+                        wss.close()
+            except Exception:
+                pass
+
+        state["connected"] = False
+        state["api"] = None
+
+        ssid, login_cookies = do_direct_login(email, password)
+        api = connect_iq_api(email, password, ssid, login_cookies)
+
+        balance_ids = fetch_profile_balances(api)
+        state["api"] = api
+        state["connected"] = True
+        state["balance_ids"] = balance_ids
+
+        real_info = balance_ids.get("REAL")
+        if real_info and real_info.get("id"):
+            try:
+                api.changebalance(real_info["id"])
+                time.sleep(1)
+                bal = api.profile.balance
+                if bal is not None:
+                    state["balance"] = float(bal)
+            except Exception:
+                pass
+
+        print(f"[watchdog] Reconectado com sucesso! Balance={state['balance']:.2f}", flush=True)
+        state["reconnect_attempts"] = 0
+
+    except Exception as e:
+        print(f"[watchdog] Falha ao reconectar: {e}", flush=True)
+
+
+def watchdog_loop():
+    """Background thread: monitors connection and auto-reconnects every 30s."""
+    print("[watchdog] Iniciado — monitorando conexão a cada 30s", flush=True)
+    while True:
+        time.sleep(30)
+        try:
+            if state.get("email") and state.get("_password"):
+                if not state.get("connected") or not is_ws_alive():
+                    print("[watchdog] Conexão perdida, reconectando...", flush=True)
+                    do_reconnect()
+        except Exception as e:
+            print(f"[watchdog] Erro inesperado: {e}", flush=True)
+
+
+def start_watchdog():
+    """Start the watchdog thread only once."""
+    global _watchdog_started
+    if not _watchdog_started:
+        _watchdog_started = True
+        t = threading.Thread(target=watchdog_loop, daemon=True)
+        t.start()
 
 
 def do_direct_login(email: str, password: str):
@@ -239,8 +344,11 @@ def login():
         state["api"] = api
         state["connected"] = True
         state["email"] = email
+        state["_password"] = password
         state["account_type"] = "REAL"
         state["balance"] = float(bal or 0)
+        state["reconnect_attempts"] = 0
+        state["last_reconnect"] = 0.0
 
         balance_ids = fetch_profile_balances(api)
         state["balance_ids"] = balance_ids
@@ -263,6 +371,9 @@ def login():
                 print(f"[bridge] Warning: could not switch to REAL: {e}", flush=True)
         else:
             print(f"[bridge] Connected! PRACTICE={practice_bal:.2f}, REAL={real_bal:.2f}", flush=True)
+
+        # Start the watchdog (only once per process lifetime)
+        start_watchdog()
 
         return jsonify({
             "success": True,
