@@ -16,7 +16,7 @@ router.get("/account/balance", (_req, res) => {
   });
 });
 
-router.post("/account/switch", (req, res) => {
+router.post("/account/switch", async (req, res) => {
   if (!iqSession.connected) {
     return res.status(401).json({ error: "Nao autenticado" });
   }
@@ -24,9 +24,9 @@ router.post("/account/switch", (req, res) => {
   if (type !== "REAL" && type !== "PRACTICE") {
     return res.status(400).json({ error: "Tipo de conta invalido. Use REAL ou PRACTICE" });
   }
-  iqSwitchAccount(type);
+  const result = await iqSwitchAccount(type);
   return res.json({
-    success: true,
+    success: result.success,
     accountType: iqSession.accountType,
     balance: iqSession.balance,
   });

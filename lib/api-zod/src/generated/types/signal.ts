@@ -28,4 +28,6 @@ export interface Signal {
   indicators?: IndicatorValues;
   timestamp: string;
   category: string;
+  currentPrice?: number;
+  usingRealData?: boolean;
 }

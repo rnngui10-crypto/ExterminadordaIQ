@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { LoginBody } from "@workspace/api-zod";
-import { iqLogin, iqLogout, iqSwitchAccount, iqSession } from "../lib/iq-client";
+import { iqLogin, iqLogout, iqSession, iqRefreshStatus } from "../lib/iq-client";
 
 const router = Router();
 
@@ -31,35 +31,27 @@ router.post("/auth/login", async (req, res) => {
     message: "Conectado com sucesso à IQ Option",
     accountType: iqSession.accountType,
     balance: iqSession.balance,
+    usingRealData: iqSession.usingRealData,
   });
 });
 
-router.get("/auth/status", (_req, res) => {
+router.get("/auth/status", async (_req, res) => {
+  if (iqSession.connected) {
+    await iqRefreshStatus();
+  }
   return res.json({
     connected: iqSession.connected,
     email: iqSession.connected ? iqSession.email : undefined,
     accountType: iqSession.connected ? iqSession.accountType : undefined,
     balance: iqSession.connected ? iqSession.balance : undefined,
+    usingRealData: iqSession.connected ? iqSession.usingRealData : undefined,
   });
 });
 
-router.post("/auth/logout", (req, res) => {
-  iqLogout();
+router.post("/auth/logout", async (req, res) => {
+  await iqLogout();
   req.log.info("User logged out");
   return res.json({ success: true, message: "Desconectado com sucesso" });
-});
-
-router.post("/account/switch", (req, res) => {
-  const { type } = req.body as { type?: string };
-  if (type !== "REAL" && type !== "PRACTICE") {
-    return res.status(400).json({ error: "Tipo de conta inválido" });
-  }
-  iqSwitchAccount(type);
-  return res.json({
-    success: true,
-    accountType: iqSession.accountType,
-    balance: iqSession.balance,
-  });
 });
 
 export default router;

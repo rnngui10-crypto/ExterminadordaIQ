@@ -9,7 +9,7 @@ import { Loader2, ShieldAlert, CheckCircle, Wifi, WifiOff } from "lucide-react";
 export default function Configuracoes() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
-  const authStatus = useGetAuthStatus({ query: { refetchInterval: 10000 } });
+  const authStatus = useGetAuthStatus({ query: { refetchInterval: 10000, queryKey: getGetAuthStatusQueryKey() } });
   const [switching, setSwitching] = useState(false);
 
   const connected = authStatus.data?.connected ?? false;

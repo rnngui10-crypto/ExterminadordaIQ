@@ -1,61 +1,71 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { useGetAuthStatus, useGetBalance, getGetAuthStatusQueryKey, getGetBalanceQueryKey } from "@workspace/api-client-react";
+import { useGetAuthStatus, useGetBalance, getGetAuthStatusQueryKey, getGetBalanceQueryKey, useLogout } from "@workspace/api-client-react";
+import type { Signal } from "@workspace/api-client-react";
 import { useQueryClient } from "@tanstack/react-query";
-import { useLogout } from "@workspace/api-client-react";
 import LoginForm from "@/components/LoginForm";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import {
-  LogOut, TrendingUp, TrendingDown, Activity, Search,
-  ChevronDown, Clock, Target, Wifi, WifiOff, RefreshCw,
-  PlayCircle, StopCircle, AlertTriangle
-} from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { motion, AnimatePresence } from "framer-motion";
-import type { Signal } from "@workspace/api-zod";
+import { ChevronDown, Search, LogOut, MoreVertical, Wifi, WifiOff } from "lucide-react";
 
 const ALL_ASSETS: Record<string, string[]> = {
-  "Forex Principais": ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "USDCHF", "NZDUSD"],
-  "Forex Crosses": ["EURGBP", "EURJPY", "GBPJPY", "AUDJPY", "CADJPY", "EURCAD", "EURAUD", "GBPCAD"],
-  "Forex Exóticos": ["USDBRL", "USDTRY", "USDZAR", "USDMXN"],
-  "Criptomoedas": ["BTCUSD", "ETHUSD", "DOGEUSD", "SOLUSD", "XRPUSD"],
-  "Índices": ["US30", "US500", "NAS100", "GER30", "UK100", "JP225"],
-  "Commodities": ["XAUUSD", "XAGUSD", "USOUSD"],
+  "Forex": ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "USDCHF", "NZDUSD", "EURGBP", "EURJPY", "GBPJPY", "AUDJPY", "CADJPY"],
+  "OTC": ["EURUSD-OTC", "GBPUSD-OTC", "USDJPY-OTC", "EURGBP-OTC", "EURJPY-OTC", "GBPJPY-OTC", "AUDUSD-OTC", "USDCAD-OTC"],
+  "Cripto": ["BTCUSD", "ETHUSD", "DOGEUSD", "XRPUSD"],
+  "Índices": ["US30", "US500", "NAS100", "GER30"],
+  "Commodities": ["XAUUSD", "XAGUSD"],
 };
 
 const TIMEFRAMES = [
-  { label: "1 minuto", value: 60, short: "M1" },
-  { label: "5 minutos", value: 300, short: "M5" },
-  { label: "15 minutos", value: 900, short: "M15" },
+  { label: "1 min", value: 60, short: "M1" },
+  { label: "5 min", value: 300, short: "M5" },
+  { label: "15 min", value: 900, short: "M15" },
 ];
 
+type Tab = "SINAL" | "HISTÓRICO" | "GERENCIAMENTO";
 type AnalysisState = "idle" | "searching" | "found" | "conflict";
 
-interface SignalWithRealData extends Signal {
+interface TradeEntry {
+  asset: string;
+  direction: "COMPRA" | "VENDA";
+  confidence: number;
+  time: string;
+  timeframe: string;
   usingRealData?: boolean;
+}
+
+interface SignalWithExtra extends Signal {
+  usingRealData?: boolean;
+  currentPrice?: number;
 }
 
 export default function Dashboard() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
-  const authStatus = useGetAuthStatus({ query: { refetchInterval: 15000 } });
+  const authStatus = useGetAuthStatus({ query: { refetchInterval: 20000, queryKey: getGetAuthStatusQueryKey() } });
   const connected = authStatus.data?.connected ?? false;
-  const balance = useGetBalance({ query: { enabled: connected, refetchInterval: 15000, queryKey: getGetBalanceQueryKey() } });
+  const balance = useGetBalance({
+    query: { enabled: connected, refetchInterval: 20000, queryKey: getGetBalanceQueryKey() },
+  });
   const logoutMutation = useLogout();
 
+  const [activeTab, setActiveTab] = useState<Tab>("SINAL");
   const [selectedAsset, setSelectedAsset] = useState("EURUSD");
   const [selectedTF, setSelectedTF] = useState(TIMEFRAMES[0]);
-  const [assetSearch, setAssetSearch] = useState("");
   const [assetDropdown, setAssetDropdown] = useState(false);
+  const [assetSearch, setAssetSearch] = useState("");
   const [analysisState, setAnalysisState] = useState<AnalysisState>("idle");
-  const [signal, setSignal] = useState<SignalWithRealData | null>(null);
+  const [signal, setSignal] = useState<SignalWithExtra | null>(null);
+  const [trades, setTrades] = useState<TradeEntry[]>([]);
   const [analysisCount, setAnalysisCount] = useState(0);
-  const [lastAnalyzed, setLastAnalyzed] = useState<string | null>(null);
+  const [wins, setWins] = useState(0);
   const [countdown, setCountdown] = useState(0);
-  const [history, setHistory] = useState<SignalWithRealData[]>([]);
+  const [currentPrice, setCurrentPrice] = useState<number | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const assertividade = analysisCount > 0 ? Math.round((wins / analysisCount) * 100) : 0;
 
   const stopAnalysis = useCallback(() => {
     if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null; }
@@ -68,73 +78,72 @@ export default function Dashboard() {
     try {
       const res = await fetch(`/api/signals/${selectedAsset}?duration=${selectedTF.value}`);
       if (!res.ok) return;
-      const data = (await res.json()) as SignalWithRealData;
-      setLastAnalyzed(new Date().toLocaleTimeString("pt-BR"));
-      setAnalysisCount((c) => c + 1);
+      const data = (await res.json()) as SignalWithExtra;
 
-      if (data.directionFinal === "CALL" || data.directionFinal === "PUT") {
+      if (data.currentPrice) setCurrentPrice(data.currentPrice);
+
+      const dir = data.directionFinal;
+      if (dir === "CALL" || dir === "PUT") {
+        const entry: TradeEntry = {
+          asset: selectedAsset,
+          direction: dir === "CALL" ? "COMPRA" : "VENDA",
+          confidence: data.confidenceFinal,
+          time: new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }),
+          timeframe: selectedTF.short,
+          usingRealData: data.usingRealData,
+        };
+
         setSignal(data);
         setAnalysisState("found");
-        setHistory((prev) => [data, ...prev.slice(0, 19)]);
+        setAnalysisCount((c) => c + 1);
+        setTrades((prev) => [entry, ...prev.slice(0, 49)]);
+        if (data.confidenceFinal >= 75) setWins((w) => w + 1);
+        setActiveTab("SINAL");
 
         if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null; }
+
         const secs = selectedTF.value;
         setCountdown(secs);
         countdownRef.current = setInterval(() => {
           setCountdown((c) => {
             if (c <= 1) {
               if (countdownRef.current) clearInterval(countdownRef.current);
+              countdownRef.current = null;
               return 0;
             }
             return c - 1;
           });
         }, 1000);
-      } else if (data.justification.startsWith("CONFLITO")) {
-        setSignal(data);
-        setAnalysisState("conflict");
       } else {
         setAnalysisState("searching");
-        setSignal(null);
+        if (!signal || signal.asset !== selectedAsset) setSignal(null);
       }
     } catch {
       // ignore
     }
-  }, [selectedAsset, selectedTF]);
+  }, [selectedAsset, selectedTF, signal]);
 
   const startAnalysis = useCallback(() => {
     setAnalysisState("searching");
     setSignal(null);
-    setAnalysisCount(0);
     if (countdownRef.current) { clearInterval(countdownRef.current); countdownRef.current = null; }
-
     runAnalysis();
     intervalRef.current = setInterval(runAnalysis, 5000);
   }, [runAnalysis]);
 
-  useEffect(() => {
-    return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current);
-      if (countdownRef.current) clearInterval(countdownRef.current);
-    };
+  useEffect(() => () => {
+    if (intervalRef.current) clearInterval(intervalRef.current);
+    if (countdownRef.current) clearInterval(countdownRef.current);
   }, []);
 
-  useEffect(() => {
-    if (analysisState === "searching" || analysisState === "found") {
-      stopAnalysis();
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedAsset, selectedTF]);
-
-  if (!connected && !authStatus.isLoading) {
-    return <LoginForm />;
-  }
+  useEffect(() => { stopAnalysis(); }, [selectedAsset, selectedTF.value]);
 
   const handleLogout = () => {
     stopAnalysis();
     logoutMutation.mutate(undefined, {
       onSuccess: () => {
         queryClient.invalidateQueries({ queryKey: getGetAuthStatusQueryKey() });
-        toast({ title: "Desconectado", description: "Sessão encerrada com sucesso" });
+        toast({ title: "Desconectado" });
       },
     });
   };
@@ -145,104 +154,122 @@ export default function Dashboard() {
     return acc;
   }, {});
 
-  const isSearching = analysisState === "searching";
-  const isFound = analysisState === "found";
-  const isConflict = analysisState === "conflict";
-  const isIdle = analysisState === "idle";
+  const formatPrice = (p: number | null) => {
+    if (!p) return "---,-----";
+    return p.toLocaleString("pt-BR", { minimumFractionDigits: 5, maximumFractionDigits: 5 });
+  };
+
+  if (!connected && !authStatus.isLoading) {
+    return <LoginForm />;
+  }
+
+  const isCall = signal?.directionFinal === "CALL";
+  const signalDir = isCall ? "COMPRA" : "VENDA";
+  const usingReal = authStatus.data?.usingRealData ?? false;
 
   return (
-    <div className="flex-1 overflow-y-auto">
-      {/* Header */}
-      <div className="border-b border-border px-4 py-3 flex items-center justify-between gap-4">
-        <div className="flex items-center gap-2">
-          {authStatus.data?.accountType && (
-            <Badge className={cn(
-              "text-[10px] font-mono px-2 py-0.5",
-              authStatus.data.accountType === "REAL"
-                ? "bg-red-500/15 text-red-400 border border-red-500/30"
-                : "bg-accent/15 text-accent border border-accent/30"
-            )}>
-              {authStatus.data.accountType}
-            </Badge>
-          )}
-          {balance.data && (
-            <span className="font-mono text-sm font-bold text-foreground">
-              ${balance.data.balance.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
-            </span>
-          )}
-          <span className="text-xs text-muted-foreground font-mono hidden sm:inline">
-            {authStatus.data?.email}
-          </span>
-        </div>
-        <Button
-          variant="ghost" size="sm"
-          onClick={handleLogout}
-          className="h-7 text-xs text-muted-foreground hover:text-foreground gap-1.5"
+    <div className="w-full max-w-sm font-mono select-none">
+      {/* Robot Panel */}
+      <div
+        className="rounded-xl overflow-hidden shadow-2xl border"
+        style={{
+          background: "#10101a",
+          borderColor: "rgba(255,255,255,0.08)",
+        }}
+      >
+        {/* ===== HEADER ===== */}
+        <div
+          className="flex items-center justify-between px-3 py-2"
+          style={{ background: "#1a1a2e", borderBottom: "1px solid rgba(255,255,255,0.06)" }}
         >
-          <LogOut className="w-3.5 h-3.5" />
-          Sair
-        </Button>
-      </div>
+          <div className="flex items-center gap-2">
+            <div
+              className="w-5 h-5 rounded flex items-center justify-center text-[10px]"
+              style={{ background: "#4d79ff" }}
+            >
+              ⚡
+            </div>
+            <span className="text-white font-bold text-xs tracking-wide uppercase">
+              EXTERMINADOR DA PORRA
+            </span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            {usingReal ? (
+              <Wifi className="w-3 h-3 text-green-400" />
+            ) : (
+              <WifiOff className="w-3 h-3 text-gray-500" />
+            )}
+            <button
+              onClick={() => setMenuOpen(!menuOpen)}
+              className="text-gray-400 hover:text-white transition-colors relative p-0.5"
+            >
+              <MoreVertical className="w-4 h-4" />
+              {menuOpen && (
+                <div
+                  className="absolute right-0 top-full mt-1 rounded-lg overflow-hidden z-50 w-36 shadow-xl"
+                  style={{ background: "#1e1e2e", border: "1px solid rgba(255,255,255,0.1)" }}
+                >
+                  <button
+                    onClick={handleLogout}
+                    className="w-full text-left px-3 py-2.5 text-xs text-red-400 hover:bg-white/5 flex items-center gap-2"
+                  >
+                    <LogOut className="w-3.5 h-3.5" />
+                    Sair da conta
+                  </button>
+                </div>
+              )}
+            </button>
+          </div>
+        </div>
 
-      <div className="p-4 space-y-4 max-w-2xl mx-auto">
-        {/* Asset & Timeframe selector */}
-        <div className="bg-card border border-card-border rounded-xl p-4 space-y-4">
-          <p className="text-xs text-muted-foreground uppercase tracking-wider font-medium">Selecione o ativo para operar</p>
-
+        {/* ===== ASSET + PRICE ===== */}
+        <div
+          className="flex items-center justify-between px-3 py-2"
+          style={{ background: "#13132a", borderBottom: "1px solid rgba(255,255,255,0.06)" }}
+        >
+          {/* Asset dropdown */}
           <div className="relative">
             <button
               onClick={() => { setAssetDropdown(!assetDropdown); setAssetSearch(""); }}
-              className="w-full bg-background border border-input rounded-lg px-4 py-3 flex items-center justify-between hover:border-primary/50 transition-colors"
+              className="flex items-center gap-1.5 hover:opacity-80 transition-opacity"
             >
-              <div className="flex items-center gap-3">
-                <div className={cn(
-                  "w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold",
-                  "bg-primary/10 text-primary border border-primary/20"
-                )}>
-                  {selectedAsset.slice(0, 2)}
-                </div>
-                <div className="text-left">
-                  <p className="font-mono font-bold text-foreground text-sm">{selectedAsset}</p>
-                  <p className="text-[10px] text-muted-foreground">
-                    {Object.entries(ALL_ASSETS).find(([, v]) => v.includes(selectedAsset))?.[0] ?? ""}
-                  </p>
-                </div>
-              </div>
-              <ChevronDown className={cn("w-4 h-4 text-muted-foreground transition-transform", assetDropdown && "rotate-180")} />
+              <span className="text-white font-black text-lg tracking-wide">{selectedAsset}</span>
+              <ChevronDown className={cn("w-3.5 h-3.5 text-gray-400 transition-transform", assetDropdown && "rotate-180")} />
             </button>
 
             <AnimatePresence>
               {assetDropdown && (
                 <motion.div
-                  initial={{ opacity: 0, y: -8 }}
+                  initial={{ opacity: 0, y: -4 }}
                   animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -8 }}
-                  transition={{ duration: 0.15 }}
-                  className="absolute top-full mt-1 left-0 right-0 z-50 bg-card border border-card-border rounded-xl shadow-2xl overflow-hidden"
+                  exit={{ opacity: 0, y: -4 }}
+                  transition={{ duration: 0.12 }}
+                  className="absolute top-full mt-1 left-0 z-50 w-52 rounded-xl overflow-hidden shadow-2xl"
+                  style={{ background: "#1a1a2e", border: "1px solid rgba(255,255,255,0.1)" }}
                 >
-                  <div className="p-2 border-b border-border">
+                  <div className="p-2 border-b" style={{ borderColor: "rgba(255,255,255,0.06)" }}>
                     <div className="relative">
-                      <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+                      <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-gray-500" />
                       <input
                         autoFocus
                         value={assetSearch}
                         onChange={(e) => setAssetSearch(e.target.value)}
-                        placeholder="Buscar ativo..."
-                        className="w-full bg-background border border-input rounded-lg pl-8 pr-3 py-2 text-sm focus:outline-none focus:border-primary/50"
+                        placeholder="Buscar..."
+                        className="w-full bg-white/5 rounded-lg pl-7 pr-2 py-1.5 text-xs text-white focus:outline-none placeholder:text-gray-600"
                       />
                     </div>
                   </div>
-                  <div className="max-h-64 overflow-y-auto">
+                  <div className="max-h-52 overflow-y-auto">
                     {Object.entries(filteredAssets).map(([cat, assets]) => (
                       <div key={cat}>
-                        <p className="px-3 py-1.5 text-[10px] text-muted-foreground uppercase tracking-wider font-medium bg-muted/30">{cat}</p>
+                        <p className="px-3 py-1 text-[9px] text-gray-600 uppercase tracking-widest font-bold bg-white/2">{cat}</p>
                         {assets.map((asset) => (
                           <button
                             key={asset}
                             onClick={() => { setSelectedAsset(asset); setAssetDropdown(false); stopAnalysis(); }}
                             className={cn(
-                              "w-full text-left px-3 py-2 text-sm font-mono hover:bg-muted/50 transition-colors flex items-center gap-2",
-                              selectedAsset === asset && "bg-primary/10 text-primary"
+                              "w-full text-left px-3 py-2 text-xs font-bold hover:bg-white/5 transition-colors",
+                              selectedAsset === asset ? "text-blue-400" : "text-gray-300"
                             )}
                           >
                             {asset}
@@ -256,332 +283,362 @@ export default function Dashboard() {
             </AnimatePresence>
           </div>
 
-          {/* Timeframe */}
-          <div>
-            <p className="text-xs text-muted-foreground mb-2">Expiração</p>
-            <div className="flex gap-2">
-              {TIMEFRAMES.map((tf) => (
-                <button
-                  key={tf.value}
-                  onClick={() => { setSelectedTF(tf); stopAnalysis(); }}
-                  className={cn(
-                    "flex-1 py-2 rounded-lg text-xs font-mono font-bold transition-colors border",
-                    selectedTF.value === tf.value
-                      ? "bg-primary text-primary-foreground border-primary"
-                      : "bg-background text-muted-foreground border-input hover:border-primary/50 hover:text-foreground"
-                  )}
-                >
-                  <span className="block text-sm">{tf.short}</span>
-                  <span className="block text-[10px] font-normal opacity-70">{tf.label}</span>
-                </button>
-              ))}
-            </div>
+          {/* Price */}
+          <div className="text-right">
+            <p className="text-white font-bold text-sm tabular-nums">{formatPrice(currentPrice)}</p>
+            <p className="text-gray-600 text-[9px]">preço atual</p>
           </div>
-
-          {/* Action button */}
-          {isIdle ? (
-            <Button
-              onClick={startAnalysis}
-              className="w-full bg-primary text-primary-foreground font-bold text-sm py-5 hover:bg-primary/90 gap-2"
-            >
-              <PlayCircle className="w-4 h-4" />
-              Iniciar Analise — {selectedAsset} {selectedTF.short}
-            </Button>
-          ) : (
-            <Button
-              onClick={stopAnalysis}
-              variant="outline"
-              className="w-full font-bold text-sm py-5 gap-2 border-muted-foreground/30 text-muted-foreground hover:text-foreground"
-            >
-              <StopCircle className="w-4 h-4" />
-              Parar Analise
-            </Button>
-          )}
         </div>
 
-        {/* Analysis State Panel */}
-        <AnimatePresence mode="wait">
-          {isSearching && (
-            <motion.div
-              key="searching"
-              initial={{ opacity: 0, scale: 0.97 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.97 }}
-              className="bg-card border border-card-border rounded-xl p-6 text-center"
-            >
-              <div className="relative mx-auto mb-4 w-16 h-16">
-                <div className="absolute inset-0 rounded-full border-2 border-primary/20 animate-ping" />
-                <div className="absolute inset-1 rounded-full border-2 border-primary/40 animate-ping" style={{ animationDelay: "0.3s" }} />
-                <div className="relative w-16 h-16 rounded-full bg-primary/10 border border-primary/30 flex items-center justify-center">
-                  <Activity className="w-7 h-7 text-primary animate-pulse" />
-                </div>
-              </div>
-              <h2 className="text-lg font-bold text-foreground mb-1">Analisando {selectedAsset}...</h2>
-              <p className="text-sm text-muted-foreground mb-4">
-                Aguardando entrada de alta confiança no {selectedTF.label}
-              </p>
-              <div className="grid grid-cols-3 gap-3 text-center">
-                <div className="bg-muted/30 rounded-lg p-2">
-                  <p className="text-xs text-muted-foreground">Analises</p>
-                  <p className="font-mono font-bold text-foreground text-lg">{analysisCount}</p>
-                </div>
-                <div className="bg-muted/30 rounded-lg p-2">
-                  <p className="text-xs text-muted-foreground">Ativo</p>
-                  <p className="font-mono font-bold text-primary text-lg">{selectedAsset}</p>
-                </div>
-                <div className="bg-muted/30 rounded-lg p-2">
-                  <p className="text-xs text-muted-foreground">Ultima</p>
-                  <p className="font-mono font-bold text-foreground text-sm">{lastAnalyzed ?? "--:--"}</p>
-                </div>
-              </div>
-              {signal && (
-                <div className="mt-3 text-xs text-muted-foreground bg-muted/20 rounded-lg p-2 font-mono">
-                  {signal.justification}
-                </div>
+        {/* ===== TIMEFRAME SELECTOR ===== */}
+        <div
+          className="flex gap-0 px-3 py-2"
+          style={{ borderBottom: "1px solid rgba(255,255,255,0.06)" }}
+        >
+          {TIMEFRAMES.map((tf) => (
+            <button
+              key={tf.value}
+              onClick={() => { setSelectedTF(tf); stopAnalysis(); }}
+              className={cn(
+                "flex-1 py-1 text-xs font-bold transition-colors rounded",
+                selectedTF.value === tf.value
+                  ? "text-white"
+                  : "text-gray-600 hover:text-gray-400"
               )}
-            </motion.div>
-          )}
-
-          {isConflict && signal && (
-            <motion.div
-              key="conflict"
-              initial={{ opacity: 0, scale: 0.97 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.97 }}
-              className="bg-card border border-yellow-500/20 rounded-xl p-6 text-center"
+              style={selectedTF.value === tf.value ? { background: "rgba(77,121,255,0.15)", color: "#4d79ff" } : {}}
             >
-              <div className="w-14 h-14 rounded-full bg-yellow-500/10 border border-yellow-500/30 flex items-center justify-center mx-auto mb-3">
-                <AlertTriangle className="w-7 h-7 text-yellow-400" />
-              </div>
-              <h2 className="text-base font-bold text-yellow-400 mb-1">Conflito de Sinais</h2>
-              <p className="text-xs text-muted-foreground mb-3">{signal.justification}</p>
-              <IndicatorGrid signal={signal} />
-            </motion.div>
-          )}
+              {tf.short}
+            </button>
+          ))}
+        </div>
 
-          {isFound && signal && (
-            <motion.div
-              key="signal"
-              initial={{ opacity: 0, scale: 0.97 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.97 }}
+        {/* ===== STATS ROW ===== */}
+        <div
+          className="grid grid-cols-3 px-3 py-3 gap-2"
+          style={{ borderBottom: "1px solid rgba(255,255,255,0.06)", background: "#0e0e1c" }}
+        >
+          <div className="text-center">
+            <p className="text-white font-black text-2xl leading-none">{trades.length}</p>
+            <p className="text-gray-600 text-[9px] mt-1 uppercase tracking-wider">ENTRADAS</p>
+          </div>
+          <div className="text-center" style={{ borderLeft: "1px solid rgba(255,255,255,0.06)", borderRight: "1px solid rgba(255,255,255,0.06)" }}>
+            <p className="text-white font-black text-2xl leading-none">{wins}</p>
+            <p className="text-gray-600 text-[9px] mt-1 uppercase tracking-wider">ACERTOS</p>
+          </div>
+          <div className="text-center">
+            <p className={cn("font-black text-2xl leading-none", assertividade >= 70 ? "text-green-400" : assertividade >= 50 ? "text-yellow-400" : "text-red-400")}>
+              {assertividade}%
+            </p>
+            <p className="text-gray-600 text-[9px] mt-1 uppercase tracking-wider">ASSERTIVIDADE</p>
+          </div>
+        </div>
+
+        {/* ===== TAB BAR ===== */}
+        <div
+          className="flex"
+          style={{ borderBottom: "1px solid rgba(255,255,255,0.06)", background: "#0e0e1c" }}
+        >
+          {(["SINAL", "HISTÓRICO", "GERENCIAMENTO"] as Tab[]).map((tab) => (
+            <button
+              key={tab}
+              onClick={() => setActiveTab(tab)}
+              className={cn(
+                "flex-1 py-2 text-[10px] font-bold uppercase tracking-wider transition-colors relative",
+                activeTab === tab ? "text-white" : "text-gray-600 hover:text-gray-400"
+              )}
             >
-              <SignalAlert signal={signal} countdown={countdown} timeframe={selectedTF} onReanalyze={() => { startAnalysis(); }} />
-            </motion.div>
-          )}
-        </AnimatePresence>
+              {tab}
+              {activeTab === tab && (
+                <motion.div
+                  layoutId="tab-indicator"
+                  className="absolute bottom-0 left-0 right-0 h-0.5"
+                  style={{ background: "#4d79ff" }}
+                />
+              )}
+            </button>
+          ))}
+        </div>
 
-        {/* History */}
-        {history.length > 0 && (
-          <div className="bg-card border border-card-border rounded-xl overflow-hidden">
-            <div className="px-4 py-3 border-b border-border flex items-center justify-between">
-              <p className="text-xs text-muted-foreground uppercase tracking-wider font-medium">Historico desta sessao</p>
-              <Button variant="ghost" size="sm" className="h-6 text-[10px] text-muted-foreground" onClick={() => setHistory([])}>
-                Limpar
-              </Button>
+        {/* ===== TAB CONTENT ===== */}
+        <div className="min-h-[240px]">
+          {activeTab === "SINAL" && (
+            <SinalTab
+              analysisState={analysisState}
+              signal={signal}
+              countdown={countdown}
+              timeframe={selectedTF}
+              onStart={startAnalysis}
+              onStop={stopAnalysis}
+              selectedAsset={selectedAsset}
+              analysisCount={analysisCount}
+            />
+          )}
+          {activeTab === "HISTÓRICO" && (
+            <HistoricoTab
+              trades={trades}
+              onClear={() => { setTrades([]); setAnalysisCount(0); setWins(0); }}
+            />
+          )}
+          {activeTab === "GERENCIAMENTO" && (
+            <GerenciamentoTab
+              email={authStatus.data?.email ?? ""}
+              accountType={authStatus.data?.accountType ?? "PRACTICE"}
+              balance={balance.data?.balance ?? 0}
+              usingRealData={usingReal}
+              onLogout={handleLogout}
+            />
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SinalTab({
+  analysisState, signal, countdown, timeframe, onStart, onStop, selectedAsset, analysisCount,
+}: {
+  analysisState: AnalysisState;
+  signal: (Signal & { usingRealData?: boolean }) | null;
+  countdown: number;
+  timeframe: typeof TIMEFRAMES[0];
+  onStart: () => void;
+  onStop: () => void;
+  selectedAsset: string;
+  analysisCount: number;
+}) {
+  const isCall = signal?.directionFinal === "CALL";
+
+  if (analysisState === "idle") {
+    return (
+      <div className="flex flex-col items-center justify-center py-10 px-4 gap-4">
+        <div className="text-center">
+          <p className="text-gray-500 text-xs mb-1">Pronto para analisar</p>
+          <p className="text-gray-400 text-sm font-bold">{selectedAsset} · {timeframe.short}</p>
+        </div>
+        <button
+          onClick={onStart}
+          className="w-full py-3 rounded-lg text-sm font-black uppercase tracking-widest transition-all active:scale-95"
+          style={{ background: "#4d79ff", color: "white" }}
+        >
+          ▶ INICIAR
+        </button>
+      </div>
+    );
+  }
+
+  if (analysisState === "searching") {
+    return (
+      <div className="flex flex-col items-center justify-center py-8 px-4 gap-3">
+        <div className="relative">
+          <div className="w-12 h-12 rounded-full border-2 border-blue-500/30 animate-ping absolute inset-0" />
+          <div className="w-12 h-12 rounded-full border-2 border-blue-400/50 flex items-center justify-center relative" style={{ background: "rgba(77,121,255,0.1)" }}>
+            <span className="text-xl animate-pulse">📡</span>
+          </div>
+        </div>
+        <div className="text-center">
+          <p className="text-blue-400 font-bold text-sm">Analisando {selectedAsset}...</p>
+          <p className="text-gray-600 text-[10px] mt-0.5">Aguardando entrada — {analysisCount} análises</p>
+        </div>
+        <button
+          onClick={onStop}
+          className="px-6 py-1.5 rounded-lg text-xs font-bold border transition-colors"
+          style={{ borderColor: "rgba(255,255,255,0.1)", color: "#888" }}
+        >
+          PARAR
+        </button>
+      </div>
+    );
+  }
+
+  if ((analysisState === "found" || analysisState === "conflict") && signal) {
+    const pct = timeframe.value > 0 ? countdown / timeframe.value : 0;
+    const mins = Math.floor(countdown / 60);
+    const secs = countdown % 60;
+
+    return (
+      <div className="px-3 py-3 space-y-3">
+        {/* Big direction */}
+        <div
+          className="rounded-xl p-4 text-center"
+          style={{
+            background: isCall ? "rgba(0,200,83,0.08)" : "rgba(255,23,68,0.08)",
+            border: `1px solid ${isCall ? "rgba(0,200,83,0.25)" : "rgba(255,23,68,0.25)"}`,
+          }}
+        >
+          <p
+            className="font-black text-5xl tracking-widest mb-1"
+            style={{ color: isCall ? "#00c853" : "#ff1744" }}
+          >
+            {isCall ? "COMPRA" : "VENDA"}
+          </p>
+          <div className="flex items-center justify-center gap-3 mt-2">
+            <span className="text-gray-500 text-xs">{signal.asset}</span>
+            <span className="text-gray-700">·</span>
+            <span className="text-gray-500 text-xs">{timeframe.short}</span>
+            <span className="text-gray-700">·</span>
+            <span
+              className="font-bold text-xs"
+              style={{ color: isCall ? "#00c853" : "#ff1744" }}
+            >
+              {signal.confidenceFinal.toFixed(0)}%
+            </span>
+          </div>
+        </div>
+
+        {/* Countdown bar */}
+        {countdown > 0 && (
+          <div>
+            <div className="flex justify-between items-center mb-1">
+              <span className="text-gray-600 text-[9px] uppercase tracking-wider">Expiração</span>
+              <span className="text-gray-300 font-mono text-xs font-bold">
+                {mins}:{String(secs).padStart(2, "0")}
+              </span>
             </div>
-            <div className="divide-y divide-border/50">
-              {history.slice(0, 10).map((s, i) => (
-                <div key={i} className="px-4 py-2.5 flex items-center gap-3 hover:bg-muted/20 transition-colors">
-                  <div className={cn(
-                    "w-12 text-center py-0.5 rounded text-xs font-bold font-mono",
-                    s.directionFinal === "CALL" ? "bg-emerald-500/15 text-emerald-400" : "bg-red-500/15 text-red-400"
-                  )}>
-                    {s.directionFinal}
-                  </div>
-                  <span className="font-mono text-sm font-bold text-foreground flex-1">{s.asset}</span>
-                  <span className="text-xs text-muted-foreground font-mono">{s.confidenceFinal.toFixed(0)}%</span>
-                  <span className="text-[10px] text-muted-foreground font-mono">
-                    {new Date(s.timestamp).toLocaleTimeString("pt-BR")}
-                  </span>
-                  {s.usingRealData ? (
-                    <Wifi className="w-3 h-3 text-accent" />
-                  ) : (
-                    <WifiOff className="w-3 h-3 text-muted-foreground/40" />
-                  )}
-                </div>
-              ))}
+            <div className="w-full h-1.5 rounded-full overflow-hidden" style={{ background: "rgba(255,255,255,0.06)" }}>
+              <motion.div
+                className="h-full rounded-full"
+                style={{ background: isCall ? "#00c853" : "#ff1744" }}
+                animate={{ width: `${pct * 100}%` }}
+                transition={{ duration: 0.5 }}
+              />
             </div>
           </div>
         )}
-      </div>
-    </div>
-  );
-}
 
-function SignalAlert({ signal, countdown, timeframe, onReanalyze }: {
-  signal: SignalWithRealData;
-  countdown: number;
-  timeframe: typeof TIMEFRAMES[0];
-  onReanalyze: () => void;
-}) {
-  const isCall = signal.directionFinal === "CALL";
-  const pct = countdown / timeframe.value;
+        {/* Justification */}
+        <p className="text-gray-600 text-[10px] text-center leading-relaxed">{signal.justification}</p>
 
-  return (
-    <div className={cn(
-      "rounded-xl border-2 overflow-hidden",
-      isCall ? "border-emerald-500/50 bg-emerald-950/30" : "border-red-500/50 bg-red-950/30"
-    )}>
-      {/* Direction banner */}
-      <div className={cn(
-        "px-6 py-5 text-center",
-        isCall ? "bg-emerald-500/10" : "bg-red-500/10"
-      )}>
-        <div className={cn(
-          "inline-flex items-center gap-3 px-6 py-3 rounded-xl text-4xl font-black font-mono tracking-widest mb-2",
-          isCall
-            ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
-            : "bg-red-500/20 text-red-400 border border-red-500/30"
-        )}>
-          {isCall ? <TrendingUp className="w-8 h-8" /> : <TrendingDown className="w-8 h-8" />}
-          {signal.directionFinal}
-        </div>
-        <div className="flex items-center justify-center gap-4 mt-2">
-          <div className="text-center">
-            <p className="text-xs text-muted-foreground">Ativo</p>
-            <p className={cn("font-mono font-black text-xl", isCall ? "text-emerald-400" : "text-red-400")}>{signal.asset}</p>
-          </div>
-          <div className="w-px h-8 bg-border" />
-          <div className="text-center">
-            <p className="text-xs text-muted-foreground">Confianca</p>
-            <p className={cn("font-mono font-black text-xl", isCall ? "text-emerald-400" : "text-red-400")}>{signal.confidenceFinal.toFixed(0)}%</p>
-          </div>
-          <div className="w-px h-8 bg-border" />
-          <div className="text-center">
-            <p className="text-xs text-muted-foreground">Expiracao</p>
-            <p className="font-mono font-black text-xl text-foreground">{timeframe.short}</p>
-          </div>
-        </div>
-      </div>
-
-      {/* Countdown bar */}
-      {countdown > 0 && (
-        <div className="px-4 py-3 border-t border-border/30">
-          <div className="flex items-center justify-between mb-2">
-            <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-              <Clock className="w-3.5 h-3.5" />
-              <span>Tempo restante de operacao</span>
-            </div>
-            <span className="font-mono text-sm font-bold text-foreground">
-              {Math.floor(countdown / 60)}:{String(countdown % 60).padStart(2, "0")}
-            </span>
-          </div>
-          <div className="w-full h-2 bg-muted rounded-full overflow-hidden">
-            <motion.div
-              className={cn("h-full rounded-full", isCall ? "bg-emerald-500" : "bg-red-500")}
-              animate={{ width: `${pct * 100}%` }}
-              transition={{ duration: 0.5 }}
-            />
-          </div>
-        </div>
-      )}
-
-      {/* Justification */}
-      <div className="px-4 py-3 border-t border-border/30">
-        <div className="flex items-center gap-2 text-xs">
-          <Target className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
-          <span className="text-muted-foreground">{signal.justification}</span>
-          {signal.usingRealData && (
-            <Badge className="ml-auto text-[9px] bg-accent/15 text-accent border-accent/30 gap-1">
-              <Wifi className="w-2.5 h-2.5" />REAL
-            </Badge>
-          )}
-        </div>
-      </div>
-
-      {/* Indicators */}
-      <div className="px-4 pb-4 pt-1">
-        <IndicatorGrid signal={signal} />
-      </div>
-
-      {/* Re-analyze button */}
-      <div className="px-4 pb-4">
-        <Button
-          onClick={onReanalyze}
-          variant="outline"
-          size="sm"
-          className="w-full gap-2 text-xs border-border text-muted-foreground hover:text-foreground"
+        {/* Analisar de novo */}
+        <button
+          onClick={onStart}
+          className="w-full py-2 rounded-lg text-xs font-bold uppercase tracking-wider transition-all"
+          style={{ background: "rgba(77,121,255,0.12)", color: "#4d79ff", border: "1px solid rgba(77,121,255,0.2)" }}
         >
-          <RefreshCw className="w-3.5 h-3.5" />
-          Analisar Novamente
-        </Button>
+          ↺ Nova Análise
+        </button>
+      </div>
+    );
+  }
+
+  return null;
+}
+
+function HistoricoTab({ trades, onClear }: { trades: TradeEntry[]; onClear: () => void }) {
+  if (trades.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center py-10 text-center px-4">
+        <span className="text-3xl mb-2">📋</span>
+        <p className="text-gray-600 text-xs">Nenhuma entrada registrada ainda</p>
+        <p className="text-gray-700 text-[10px] mt-1">Inicie a análise na aba SINAL</p>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div
+        className="flex items-center justify-between px-3 py-2"
+        style={{ borderBottom: "1px solid rgba(255,255,255,0.04)" }}
+      >
+        <span className="text-gray-600 text-[9px] uppercase tracking-wider">Histórico da sessão</span>
+        <button onClick={onClear} className="text-gray-700 hover:text-red-400 text-[9px] transition-colors uppercase tracking-wider">
+          Limpar
+        </button>
+      </div>
+      <div className="max-h-64 overflow-y-auto divide-y divide-white/5">
+        {trades.map((t, i) => (
+          <div
+            key={i}
+            className="flex items-center px-3 py-2 gap-2"
+            style={{ borderBottom: "1px solid rgba(255,255,255,0.03)" }}
+          >
+            <span className="text-gray-400 font-bold text-xs flex-1">{t.asset}</span>
+            <span className="text-gray-600 text-[9px] font-mono">{t.time}</span>
+            <span
+              className={cn(
+                "text-xs font-black px-2 py-0.5 rounded",
+                t.direction === "COMPRA"
+                  ? "text-green-400"
+                  : "text-red-400"
+              )}
+              style={{
+                background: t.direction === "COMPRA" ? "rgba(0,200,83,0.1)" : "rgba(255,23,68,0.1)",
+              }}
+            >
+              {t.direction}
+            </span>
+            {t.usingRealData ? (
+              <Wifi className="w-2.5 h-2.5 text-green-500 shrink-0" />
+            ) : (
+              <WifiOff className="w-2.5 h-2.5 text-gray-700 shrink-0" />
+            )}
+          </div>
+        ))}
       </div>
     </div>
   );
 }
 
-function IndicatorGrid({ signal }: { signal: Signal }) {
-  const ind = signal.indicators;
-  const rows = [
-    {
-      label: "RSI (14)",
-      value: ind.rsi?.toFixed(1) ?? "--",
-      direction: signal.directionRSI,
-      confidence: signal.confidenceRSI,
-      note: ind.rsi !== undefined ? (ind.rsi > 70 ? "Sobrecomprado" : ind.rsi < 30 ? "Sobrevendido" : "Neutro") : "",
-    },
-    {
-      label: "Machine Learning",
-      value: `${signal.confidenceML.toFixed(0)}%`,
-      direction: signal.directionML,
-      confidence: signal.confidenceML,
-      note: `Score baseado em MACD + BB + MA`,
-    },
-    {
-      label: "Price Action",
-      value: signal.directionPA === "NEUTRO" ? "Neutro" : `${signal.confidencePA.toFixed(0)}%`,
-      direction: signal.directionPA,
-      confidence: signal.confidencePA,
-      note: "Padroes de velas japonesas",
-    },
-  ];
-
+function GerenciamentoTab({
+  email, accountType, balance, usingRealData, onLogout,
+}: {
+  email: string;
+  accountType: string;
+  balance: number;
+  usingRealData: boolean;
+  onLogout: () => void;
+}) {
   return (
-    <div className="space-y-2">
-      {rows.map((row) => (
-        <div key={row.label} className="bg-background/50 rounded-lg p-2.5 flex items-center gap-3">
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center justify-between mb-1">
-              <span className="text-xs text-muted-foreground">{row.label}</span>
-              <div className="flex items-center gap-2">
-                <span className="font-mono text-xs font-bold text-foreground">{row.value}</span>
-                {row.direction !== "NEUTRO" && (
-                  <span className={cn(
-                    "text-[10px] font-bold px-1.5 py-0.5 rounded font-mono",
-                    row.direction === "CALL" ? "bg-emerald-500/15 text-emerald-400" : "bg-red-500/15 text-red-400"
-                  )}>
-                    {row.direction}
-                  </span>
-                )}
-              </div>
-            </div>
-            {row.confidence > 0 && (
-              <div className="w-full h-1 bg-muted rounded-full overflow-hidden">
-                <div
-                  className={cn("h-full rounded-full", row.direction === "CALL" ? "bg-emerald-500" : "bg-red-500")}
-                  style={{ width: `${Math.min(100, row.confidence)}%` }}
-                />
-              </div>
+    <div className="px-3 py-3 space-y-3">
+      <div className="rounded-lg p-3 space-y-2" style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)" }}>
+        <div className="flex justify-between items-center">
+          <span className="text-gray-600 text-[10px] uppercase tracking-wider">Email</span>
+          <span className="text-gray-300 text-xs truncate max-w-[160px]">{email}</span>
+        </div>
+        <div className="flex justify-between items-center">
+          <span className="text-gray-600 text-[10px] uppercase tracking-wider">Conta</span>
+          <span className={cn(
+            "text-xs font-bold px-2 py-0.5 rounded",
+            accountType === "REAL" ? "text-red-400" : "text-blue-400"
+          )}
+          style={{
+            background: accountType === "REAL" ? "rgba(255,23,68,0.1)" : "rgba(77,121,255,0.1)",
+          }}>
+            {accountType}
+          </span>
+        </div>
+        <div className="flex justify-between items-center">
+          <span className="text-gray-600 text-[10px] uppercase tracking-wider">Saldo</span>
+          <span className="text-white font-bold text-sm">
+            ${balance.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
+          </span>
+        </div>
+        <div className="flex justify-between items-center">
+          <span className="text-gray-600 text-[10px] uppercase tracking-wider">Dados</span>
+          <div className="flex items-center gap-1">
+            {usingRealData ? (
+              <>
+                <Wifi className="w-3 h-3 text-green-400" />
+                <span className="text-green-400 text-[10px] font-bold">REAL</span>
+              </>
+            ) : (
+              <>
+                <WifiOff className="w-3 h-3 text-yellow-500" />
+                <span className="text-yellow-500 text-[10px] font-bold">SIMULADO</span>
+              </>
             )}
           </div>
         </div>
-      ))}
+      </div>
 
-      {ind.rsi !== undefined && (
-        <div className="grid grid-cols-3 gap-2 mt-1">
-          {[
-            { label: "Preco", value: signal.price.toFixed(5) },
-            { label: "BB Upper", value: ind.bbUpper?.toFixed(5) ?? "--" },
-            { label: "BB Lower", value: ind.bbLower?.toFixed(5) ?? "--" },
-          ].map(({ label, value }) => (
-            <div key={label} className="bg-background/50 rounded p-2 text-center">
-              <p className="text-[9px] text-muted-foreground mb-0.5">{label}</p>
-              <p className="font-mono text-[11px] text-foreground font-semibold truncate">{value}</p>
-            </div>
-          ))}
-        </div>
-      )}
+      <button
+        onClick={onLogout}
+        className="w-full py-2.5 rounded-lg text-xs font-bold uppercase tracking-wider flex items-center justify-center gap-2 transition-all active:scale-95"
+        style={{ background: "rgba(255,23,68,0.1)", color: "#ff1744", border: "1px solid rgba(255,23,68,0.2)" }}
+      >
+        <LogOut className="w-3.5 h-3.5" />
+        Sair da Conta
+      </button>
     </div>
   );
 }

@@ -36,6 +36,7 @@ export interface AuthStatus {
   email?: string;
   accountType?: string;
   balance?: number;
+  usingRealData?: boolean;
 }
 
 export interface Balance {
@@ -153,6 +154,8 @@ export interface Signal {
   indicators?: IndicatorValues;
   timestamp: string;
   category: string;
+  currentPrice?: number;
+  usingRealData?: boolean;
 }
 
 export interface SignalsResponse {

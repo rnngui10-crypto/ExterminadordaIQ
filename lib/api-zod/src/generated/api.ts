@@ -38,6 +38,7 @@ export const GetAuthStatusResponse = zod.object({
   email: zod.string().optional(),
   accountType: zod.string().optional(),
   balance: zod.number().optional(),
+  usingRealData: zod.boolean().optional(),
 });
 
 /**
@@ -150,6 +151,8 @@ export const GetSignalsResponse = zod.object({
         .optional(),
       timestamp: zod.string(),
       category: zod.string(),
+      currentPrice: zod.number().optional(),
+      usingRealData: zod.boolean().optional(),
     }),
   ),
   totalAnalyzed: zod.number(),
@@ -192,6 +195,8 @@ export const GetSignalByAssetResponse = zod.object({
     .optional(),
   timestamp: zod.string(),
   category: zod.string(),
+  currentPrice: zod.number().optional(),
+  usingRealData: zod.boolean().optional(),
 });
 
 /**
@@ -228,6 +233,8 @@ export const GetSignalHistoryResponse = zod.object({
         .optional(),
       timestamp: zod.string(),
       category: zod.string(),
+      currentPrice: zod.number().optional(),
+      usingRealData: zod.boolean().optional(),
     }),
   ),
   total: zod.number(),

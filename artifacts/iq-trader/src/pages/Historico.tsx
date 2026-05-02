@@ -1,4 +1,4 @@
-import { useGetSignalHistory } from "@workspace/api-client-react";
+import { useGetSignalHistory, getGetSignalHistoryQueryKey } from "@workspace/api-client-react";
 import SignalTable from "@/components/SignalTable";
 import { Skeleton } from "@/components/ui/skeleton";
 import { TrendingUp, TrendingDown, Zap, BarChart3 } from "lucide-react";
@@ -6,7 +6,7 @@ import { cn } from "@/lib/utils";
 
 export default function Historico() {
   const history = useGetSignalHistory({
-    query: { refetchInterval: 15000 },
+    query: { refetchInterval: 15000, queryKey: getGetSignalHistoryQueryKey() },
   });
 
   const allHistory = history.data?.history ?? [];

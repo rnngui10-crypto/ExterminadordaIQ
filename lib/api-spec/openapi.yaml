@@ -277,6 +277,8 @@ components:
           type: string
         balance:
           type: number
+        usingRealData:
+          type: boolean
       required:
         - connected
 
@@ -431,6 +433,10 @@ components:
           type: string
         category:
           type: string
+        currentPrice:
+          type: number
+        usingRealData:
+          type: boolean
       required:
         - asset
         - price

@@ -1,20 +1,14 @@
+/**
+ * IQ Option client — proxies all calls to the Python bridge (port 7777).
+ * The Python bridge uses the official iqoptionapi library for real WebSocket access.
+ */
+
 import axios from "axios";
-import WebSocket from "ws";
 import { logger } from "./logger";
 
-interface IQCandle {
-  id: number;
-  from: number;
-  to: number;
-  open: number;
-  close: number;
-  min: number;
-  max: number;
-  volume: number;
-  phase: string;
-}
+const BRIDGE_URL = "http://localhost:7777";
 
-interface IQSession {
+export interface IQSession {
   connected: boolean;
   ssid: string;
   email: string;
@@ -22,12 +16,7 @@ interface IQSession {
   balance: number;
   realBalance: number;
   practiceBalance: number;
-  userId?: number;
-  ws?: WebSocket;
-  lastError?: string;
-  pendingCallbacks: Map<string, (data: unknown) => void>;
-  requestId: number;
-  loginCookies: string;
+  usingRealData: boolean;
 }
 
 export const iqSession: IQSession = {
@@ -38,134 +27,40 @@ export const iqSession: IQSession = {
   balance: 0,
   realBalance: 0,
   practiceBalance: 0,
-  pendingCallbacks: new Map(),
-  requestId: 1,
-  loginCookies: "",
+  usingRealData: false,
 };
 
-function nextReqId(): string {
-  return String(iqSession.requestId++);
-}
-
-function sendWs(msg: object): void {
-  if (iqSession.ws && iqSession.ws.readyState === WebSocket.OPEN) {
-    iqSession.ws.send(JSON.stringify(msg));
+async function bridgeGet<T>(path: string, params?: Record<string, string | number>): Promise<T | null> {
+  try {
+    const res = await axios.get<T>(`${BRIDGE_URL}${path}`, { params, timeout: 30000 });
+    return res.data;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.warn({ err: msg, path }, "Bridge GET failed");
+    return null;
   }
 }
 
-function buildCookieString(setCookieHeaders: string[]): string {
-  return setCookieHeaders
-    .map((c) => c.split(";")[0])
-    .join("; ");
+async function bridgePost<T>(path: string, body?: unknown): Promise<T | null> {
+  try {
+    const res = await axios.post<T>(`${BRIDGE_URL}${path}`, body, { timeout: 30000 });
+    return res.data;
+  } catch (err: unknown) {
+    if (axios.isAxiosError(err) && err.response) {
+      const data = err.response.data as { error?: string };
+      throw new Error(data?.error ?? `HTTP ${err.response.status}`);
+    }
+    throw err;
+  }
 }
 
-function connectWebSocket(ssid: string, cookies: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const wsUrl = "wss://iqbroker.com/echo/websocket";
-    const userAgent =
-      "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
-
-    const wsHeaders: Record<string, string> = {
-      Origin: "https://iqoption.com",
-      "User-Agent": userAgent,
-    };
-    if (cookies) wsHeaders["Cookie"] = cookies;
-
-    const ws = new WebSocket(wsUrl, {
-      headers: wsHeaders,
-      followRedirects: true,
-    } as WebSocket.ClientOptions & { followRedirects: boolean });
-
-    const timeout = setTimeout(() => {
-      ws.terminate();
-      reject(new Error("WebSocket connection timeout (15s)"));
-    }, 20000);
-
-    let authenticated = false;
-
-    ws.on("open", () => {
-      iqSession.ws = ws;
-      sendWs({ name: "ssid", msg: ssid });
-    });
-
-    ws.on("message", (raw: Buffer) => {
-      try {
-        const data = JSON.parse(raw.toString()) as {
-          name?: string;
-          msg?: Record<string, unknown>;
-          microserviceName?: string;
-        };
-        const name: string = data.name ?? "";
-        const body = data.msg ?? {};
-
-        if (name === "profile" && !authenticated) {
-          authenticated = true;
-          clearTimeout(timeout);
-          iqSession.userId = body["id"] as number | undefined;
-          const balances = (body["balances"] as Array<{ type: number; amount: number }>) ?? [];
-          const real = balances.find((b) => b.type === 1);
-          const practice = balances.find((b) => b.type === 4);
-          iqSession.realBalance = real?.amount ?? 0;
-          iqSession.practiceBalance = practice?.amount ?? 10000;
-          iqSession.balance =
-            iqSession.accountType === "REAL"
-              ? iqSession.realBalance
-              : iqSession.practiceBalance;
-          iqSession.connected = true;
-          logger.info(
-            { userId: iqSession.userId, realBalance: iqSession.realBalance, practiceBalance: iqSession.practiceBalance },
-            "IQ Option profile received"
-          );
-          resolve();
-        }
-
-        if (name === "candles" || name === "history" || name === "get-candles") {
-          const reqId = String((body["request_id"] ?? "") as string | number);
-          const cb = iqSession.pendingCallbacks.get(reqId);
-          if (cb) {
-            iqSession.pendingCallbacks.delete(reqId);
-            cb(body);
-          }
-        }
-
-        if (name === "heartbeat") {
-          sendWs({ name: "heartbeat", msg: { heartbeat: body["heartbeat"] } });
-        }
-
-        if (name === "balance-changed") {
-          const newBalance = body["amount"] as number | undefined;
-          if (newBalance !== undefined) {
-            iqSession.balance = newBalance;
-            if (iqSession.accountType === "REAL") iqSession.realBalance = newBalance;
-            else iqSession.practiceBalance = newBalance;
-          }
-        }
-      } catch {
-        // ignore parse errors
-      }
-    });
-
-    ws.on("error", (err) => {
-      if (!authenticated) {
-        clearTimeout(timeout);
-        iqSession.lastError = err.message;
-        logger.warn({ err: err.message }, "IQ Option WebSocket error");
-        reject(err);
-      }
-    });
-
-    ws.on("close", () => {
-      if (!authenticated) {
-        clearTimeout(timeout);
-        reject(new Error("WebSocket closed before authentication"));
-        // Don't reset session — HTTP-authenticated session stays valid
-        return;
-      }
-      // Only reset if WS was the primary connection source
-      iqSession.ws = undefined;
-      logger.warn("IQ Option WebSocket closed");
-    });
-  });
+export async function isBridgeAvailable(): Promise<boolean> {
+  try {
+    const res = await axios.get(`${BRIDGE_URL}/health`, { timeout: 2000 });
+    return res.status === 200;
+  } catch {
+    return false;
+  }
 }
 
 export async function iqLogin(
@@ -173,175 +68,135 @@ export async function iqLogin(
   password: string
 ): Promise<{ success: boolean; error?: string }> {
   try {
-    logger.info({ email }, "Attempting IQ Option login");
-
-    const userAgent =
-      "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
-
-    const loginRes = await axios.post(
-      "https://auth.iqoption.com/api/v1.0/login",
-      { email, password },
-      {
-        headers: {
-          "Content-Type": "application/json",
-          "User-Agent": userAgent,
-          Origin: "https://iqoption.com",
-          Referer: "https://iqoption.com/",
-        },
-        timeout: 15000,
-        validateStatus: () => true,
-      }
-    );
-
-    if (loginRes.status === 403 || loginRes.status === 401) {
-      return { success: false, error: "Email ou senha incorretos" };
+    const available = await isBridgeAvailable();
+    if (!available) {
+      return { success: false, error: "Serviço Python não está disponível. Aguarde o servidor iniciar e tente novamente." };
     }
 
-    if (loginRes.status === 400) {
-      const errBody = loginRes.data as { errors?: Array<{ title?: string }> };
-      const firstErr = errBody?.errors?.[0]?.title ?? "Credenciais invalidas";
-      return { success: false, error: firstErr };
+    logger.info({ email }, "Proxying login to Python bridge");
+    const result = await bridgePost<{
+      success: boolean;
+      error?: string;
+      email?: string;
+      accountType?: string;
+      balance?: number;
+      realBalance?: number;
+      practiceBalance?: number;
+    }>("/login", { email, password });
+
+    if (!result) {
+      return { success: false, error: "Sem resposta do servidor Python" };
     }
 
-    if (loginRes.status !== 200) {
-      return {
-        success: false,
-        error: `Erro ao conectar com IQ Option (HTTP ${loginRes.status})`,
-      };
+    if (!result.success) {
+      return { success: false, error: result.error ?? "Falha ao conectar" };
     }
 
-    const resData = loginRes.data as { data?: { ssid?: string } };
-    let ssid = resData?.data?.ssid ?? "";
-
-    // Also try cookie extraction
-    const setCookies: string[] =
-      (loginRes.headers["set-cookie"] as string[] | undefined) ?? [];
-
-    if (!ssid) {
-      const ssidCookie = setCookies.find((c) => c.startsWith("ssid="));
-      if (ssidCookie) ssid = ssidCookie.split(";")[0].replace("ssid=", "");
-    }
-
-    if (!ssid) {
-      return {
-        success: false,
-        error: "Nao foi possivel obter a sessao da IQ Option. Verifique suas credenciais.",
-      };
-    }
-
-    iqSession.ssid = ssid;
+    iqSession.connected = true;
     iqSession.email = email;
     iqSession.accountType = "PRACTICE";
+    iqSession.balance = result.balance ?? 0;
+    iqSession.realBalance = result.realBalance ?? 0;
+    iqSession.practiceBalance = result.practiceBalance ?? result.balance ?? 0;
+    iqSession.usingRealData = true;
 
-    // Build cookie string including the ssid
-    const cookieMap = new Map<string, string>();
-    for (const c of setCookies) {
-      const [pair] = c.split(";");
-      const eqIdx = pair.indexOf("=");
-      if (eqIdx > 0) {
-        cookieMap.set(pair.slice(0, eqIdx).trim(), pair.slice(eqIdx + 1).trim());
-      }
-    }
-    // Ensure ssid cookie is included
-    if (!cookieMap.has("ssid")) cookieMap.set("ssid", ssid);
-
-    const cookieString = Array.from(cookieMap.entries())
-      .map(([k, v]) => `${k}=${v}`)
-      .join("; ");
-
-    iqSession.loginCookies = cookieString;
-
-    logger.info({ ssidLength: ssid.length, cookieCount: cookieMap.size }, "Login HTTP success, connecting WebSocket");
-
-    // Mark as authenticated via HTTP — WebSocket is attempted but optional
-    iqSession.connected = true;
-    iqSession.realBalance = 0;
-    iqSession.practiceBalance = 10000;
-    iqSession.balance = iqSession.practiceBalance;
-
-    // Try WebSocket in background (may fail from cloud servers — that's OK)
-    connectWebSocket(ssid, cookieString).then(() => {
-      logger.info("IQ Option WebSocket connected — using real-time data");
-    }).catch((wsErr: Error) => {
-      logger.warn({ err: wsErr.message }, "IQ Option WebSocket unavailable from this server — using simulated data");
-    });
-
+    logger.info(
+      { balance: iqSession.balance, realBalance: iqSession.realBalance },
+      "Login via Python bridge successful"
+    );
     return { success: true };
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
-    logger.error({ err: msg }, "IQ Option login failed");
-
-    if (msg.includes("ECONNREFUSED") || msg.includes("ENOTFOUND")) {
-      return { success: false, error: "Sem conexao com a internet ou IQ Option indisponivel." };
+    logger.error({ err: msg }, "Login proxy error");
+    if (msg.includes("incorretos") || msg.includes("401")) {
+      return { success: false, error: "Email ou senha incorretos" };
     }
-    if (msg.includes("timeout")) {
-      return { success: false, error: "Conexao com IQ Option expirou. Tente novamente." };
-    }
-    return { success: false, error: `Falha ao conectar: ${msg.slice(0, 120)}` };
+    return { success: false, error: msg.slice(0, 200) };
   }
+}
+
+export async function iqRefreshStatus(): Promise<void> {
+  try {
+    const data = await bridgeGet<{
+      connected: boolean;
+      email?: string;
+      accountType?: string;
+      balance?: number;
+      realBalance?: number;
+      practiceBalance?: number;
+      usingRealData?: boolean;
+    }>("/status");
+
+    if (!data) return;
+    iqSession.connected = data.connected;
+    if (data.connected) {
+      iqSession.email = data.email ?? iqSession.email;
+      iqSession.accountType = (data.accountType as "REAL" | "PRACTICE") ?? iqSession.accountType;
+      iqSession.balance = data.balance ?? iqSession.balance;
+      iqSession.realBalance = data.realBalance ?? iqSession.realBalance;
+      iqSession.practiceBalance = data.practiceBalance ?? iqSession.practiceBalance;
+      iqSession.usingRealData = data.usingRealData ?? true;
+    }
+  } catch {
+    // ignore
+  }
+}
+
+export interface BridgeCandle {
+  time: number;
+  open: number;
+  close: number;
+  high: number;
+  low: number;
 }
 
 export async function iqGetCandles(
   asset: string,
   duration: number,
   count: number
-): Promise<IQCandle[] | null> {
-  if (!iqSession.ws || iqSession.ws.readyState !== WebSocket.OPEN) {
+): Promise<BridgeCandle[] | null> {
+  try {
+    const data = await bridgeGet<{ candles: BridgeCandle[]; error?: string }>(
+      `/candles/${encodeURIComponent(asset)}`,
+      { duration, count }
+    );
+    if (!data || !Array.isArray(data.candles) || data.candles.length === 0) return null;
+    return data.candles;
+  } catch {
     return null;
   }
-
-  const reqId = nextReqId();
-  const endTime = Math.floor(Date.now() / 1000);
-
-  return new Promise((resolve) => {
-    const timeoutHandle = setTimeout(() => {
-      iqSession.pendingCallbacks.delete(reqId);
-      resolve(null);
-    }, 10000);
-
-    iqSession.pendingCallbacks.set(reqId, (data: unknown) => {
-      clearTimeout(timeoutHandle);
-      const body = data as { candles?: IQCandle[] };
-      resolve(body?.candles ?? null);
-    });
-
-    sendWs({
-      name: "get-candles",
-      msg: {
-        asset_name: asset,
-        duration,
-        to: endTime,
-        count,
-        request_id: reqId,
-      },
-    });
-  });
 }
 
-export function iqLogout(): void {
-  if (iqSession.ws) {
-    iqSession.ws.terminate();
-    iqSession.ws = undefined;
+export async function iqLogout(): Promise<void> {
+  try {
+    await bridgePost("/logout");
+  } catch {
+    // ignore
+  } finally {
+    iqSession.connected = false;
+    iqSession.ssid = "";
+    iqSession.email = "";
+    iqSession.balance = 0;
+    iqSession.realBalance = 0;
+    iqSession.practiceBalance = 0;
+    iqSession.usingRealData = false;
   }
-  iqSession.connected = false;
-  iqSession.ssid = "";
-  iqSession.email = "";
-  iqSession.balance = 0;
-  iqSession.realBalance = 0;
-  iqSession.practiceBalance = 0;
-  iqSession.loginCookies = "";
-  iqSession.pendingCallbacks.clear();
 }
 
-export function iqSwitchAccount(type: "REAL" | "PRACTICE"): void {
-  iqSession.accountType = type;
-  iqSession.balance =
-    type === "REAL" ? iqSession.realBalance : iqSession.practiceBalance;
-
-  if (iqSession.ws && iqSession.ws.readyState === WebSocket.OPEN) {
-    sendWs({
-      name: "change-account",
-      msg: { account_type: type === "REAL" ? "real" : "practice" },
-    });
+export async function iqSwitchAccount(type: "REAL" | "PRACTICE"): Promise<{ success: boolean; balance?: number }> {
+  try {
+    const result = await bridgePost<{ success: boolean; accountType?: string; balance?: number }>(
+      "/switch",
+      { type }
+    );
+    if (result?.success) {
+      iqSession.accountType = type;
+      iqSession.balance = result.balance ?? iqSession.balance;
+    }
+    return { success: result?.success ?? false, balance: result?.balance };
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.warn({ err: msg }, "Switch account failed");
+    return { success: false };
   }
 }

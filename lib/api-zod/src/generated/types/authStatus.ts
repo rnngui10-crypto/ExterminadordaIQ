@@ -11,4 +11,5 @@ export interface AuthStatus {
   email?: string;
   accountType?: string;
   balance?: number;
+  usingRealData?: boolean;
 }
